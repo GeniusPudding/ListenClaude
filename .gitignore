@@ -10,3 +10,9 @@ venv/
 
 # Claude Code per-user permissions; project-shared settings.json may still be tracked.
 .claude/settings.local.json
+
+# User-supplied reference audio for fish-speech voice cloning.
+voices/
+
+# Downloaded fish-speech model checkpoints (~2 GB) — too big for git.
+models/

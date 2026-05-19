@@ -9,7 +9,7 @@ Companion to [Kaikou-Claude](https://github.com/GeniusPudding/Kaikou-Claude) (vo
 ## Features
 
 - **Auto-triggered** by Claude Code's `Stop` hook — zero manual interaction.
-- **Four TTS engines** — free neural (Edge), OS built-in, fully offline (Piper), or premium cloud (ElevenLabs).
+- **Five TTS engines** — free neural (Edge), OS built-in, fully offline (Piper), premium cloud (ElevenLabs), or local GPU with native zh/en code-switching + voice cloning (fish-speech).
 - **Runtime mode switch** — flip between brief and detailed spoken replies via `/listen <mode>`.
 - **Skip-short threshold** — won't read trivial "ok" responses.
 - **FIFO queue across windows** — every Claude session's summary is spoken in turn; nothing is dropped when several windows finish at once.
@@ -99,6 +99,9 @@ The skill autodetects the engine from the voice ID format (`zh-TW-…Neural` →
 | `system` | Free | Basic | None | No network egress, smallest footprint |
 | `piper` | Free | High (neural) | Manual model download | Fully offline / air-gapped |
 | `elevenlabs` | Paid | Top | API key | Studio-grade voice quality |
+| `fish` | Free* | Top | `scripts/install-fish-speech` | Local GPU + native zh/en code-switching + voice cloning |
+
+\* `fish` is free to run but downloads ~2 GB of model weights and needs CUDA for usable speed. Auto-falls back to `TTS_FALLBACK_ENGINE` (default `edge`) when CUDA / fish-speech / the local server is unavailable — safe to enable on no-GPU machines.
 
 **Edge TTS** — popular Chinese voices: `zh-TW-HsiaoChenNeural` (TW female, default), `zh-TW-YunJheNeural` (TW male), `zh-CN-XiaoxiaoNeural` (CN female), `yue-HK-WanLungNeural` (Cantonese). Full list: `.venv/bin/edge-tts --list-voices`.
 
@@ -121,6 +124,27 @@ TTS_VOICE=<voice_id>
 ELEVENLABS_API_KEY=<your_key>
 ```
 
+**fish-speech (GPU)** — local high-quality TTS with native Chinese/English code-switching and zero-shot voice cloning. Install (one-time):
+
+```bash
+.\scripts\install-fish-speech.ps1   # Windows
+bash scripts/install-fish-speech.sh # macOS / Linux
+```
+
+The script detects CUDA, installs the right PyTorch wheel (or CPU-only on no-GPU machines), pulls `fish-speech` from PyPI, and downloads the `fish-speech-1.5` checkpoints (~2 GB) to `~/.cache/fish-speech`. Then in `.env`:
+
+```
+TTS_ENGINE=fish
+TTS_FALLBACK_ENGINE=edge        # what to use when CUDA / server unavailable
+# Optional voice cloning:
+FISH_REFERENCE_VOICE=voices/myvoice.wav   # 10-30 s, single speaker, clean
+FISH_REFERENCE_TEXT=請輸入這段參考錄音的逐字稿
+```
+
+How it works: the first response after a cold machine spawns a persistent local HTTP server (`python -m tools.api_server`) that holds the model in VRAM. Cold start ~10 s; each subsequent response is ~1–2 s of synthesis. The server self-terminates after `FISH_IDLE_TIMEOUT_SEC` (default 600 s) of inactivity to free VRAM.
+
+If anything along the chain breaks (no CUDA, fish-speech not installed, model missing, server crashed, network error), `fish.py` silently delegates to `TTS_FALLBACK_ENGINE` so audio always plays — set `TTS_ENGINE=fish` in `.env` and ship the repo to a no-GPU teammate and it'll just behave like Edge for them.
+
 ## Uninstall
 
 ```bash
@@ -137,7 +161,8 @@ Removes the Stop hook from `~/.claude/settings.json`. Repo files stay on disk.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `TTS_ENABLED` | `1` | `0` disables without uninstalling. |
-| `TTS_ENGINE` | `edge` | `edge`, `system`, `piper`, or `elevenlabs`. |
+| `TTS_ENGINE` | `edge` | `edge`, `system`, `piper`, `elevenlabs`, or `fish`. |
+| `TTS_FALLBACK_ENGINE` | `edge` | Engine used when the primary fails (e.g. `fish` with no CUDA). Must not be `fish`. |
 | `TTS_VOICE` | `zh-TW-HsiaoChenNeural` | Engine-specific voice ID. |
 | `TTS_MODE` | `progress` | `llm`, `progress`, `first`, `summary`, or `full`. Switchable at runtime via `/listen <mode>`. |
 | `TTS_LLM_MODEL` | `claude-haiku-4-5` | Model `claude -p` calls when `TTS_MODE=llm`. |
@@ -147,6 +172,15 @@ Removes the Stop hook from `~/.claude/settings.json`. Repo files stay on disk.
 | `TTS_RATE` | `200` | Rough words-per-minute (engine-specific mapping). |
 | `ANNOUNCE_PROJECT` | `1` | Prepend project / window name before spoken text. |
 | `PIPER_VOICES_DIR` | `~/.cache/piper-voices` | Piper voice files location. |
+| `FISH_MODEL_DIR` | `~/.cache/fish-speech` | Where fish-speech checkpoints live. |
+| `FISH_HOST` / `FISH_PORT` | `127.0.0.1` / `7867` | Loopback address of the auto-started fish-speech API server. |
+| `FISH_REFERENCE_VOICE` | *(empty)* | Optional WAV/MP3 path for zero-shot voice cloning. |
+| `FISH_REFERENCE_TEXT` | *(empty)* | Transcript of the reference voice (improves clone quality). |
+| `FISH_STARTUP_TIMEOUT_SEC` | `60` | Cold-start budget for the fish-speech server. |
+| `FISH_SYNTH_TIMEOUT_SEC` | `30` | Per-request synthesis timeout. |
+| `FISH_IDLE_TIMEOUT_SEC` | `600` | Server exits after this much idle to free VRAM. |
+| `FISH_FORCE_CPU` | `0` | Force CPU even when CUDA is available (debugging). |
+| `FISH_SERVER_CMD` | *(empty)* | Advanced: full override of the server launch command. |
 
 ## How it works
 

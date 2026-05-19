@@ -12,9 +12,22 @@ IS_WIN = sys.platform == "win32"
 IS_MAC = sys.platform == "darwin"
 IS_LINUX = sys.platform.startswith("linux")
 
-# TTS engine: "system" (built-in: macOS say / Win SAPI), "piper" (local
-# Piper TTS, requires the piper-tts pip package and a downloaded voice).
+# TTS engine. Free / no-setup options first:
+#   "edge"       — Microsoft Edge cloud (default in .env.example). No GPU.
+#   "system"     — OS built-in (macOS say / Win SAPI / Linux espeak). No GPU.
+#   "piper"      — local Piper TTS (CPU ONNX). Requires `piper-tts` + voice.
+#   "elevenlabs" — paid cloud, top quality. No GPU.
+#   "fish"       — local fish-speech (CUDA recommended). Native Chinese
+#                  / English code-switching + voice cloning. Auto-falls
+#                  back to TTS_FALLBACK_ENGINE if CUDA / server / model
+#                  is unavailable — safe to enable on machines without GPU.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "system").lower()
+
+# Engine to use when the primary engine fails (e.g. fish-speech with no
+# CUDA / no model / server crash). Never set this to "fish" itself —
+# fish.py guards against that, but keeping it as a cloud / CPU engine
+# makes the intent obvious.
+TTS_FALLBACK_ENGINE = os.getenv("TTS_FALLBACK_ENGINE", "edge").lower()
 
 # Voice identifier — interpretation depends on the engine:
 #   system + macOS: voice name (e.g. "Mei-Jia", "Tingting"); `say -v '?'`
@@ -96,5 +109,54 @@ PIPER_VOICES_DIR = os.getenv(
     "PIPER_VOICES_DIR",
     os.path.expanduser("~/.cache/piper-voices"),
 )
+
+# --- fish-speech (TTS_ENGINE=fish) ---------------------------------------
+# The fish-speech HTTP API server runs as a persistent local subprocess so
+# we pay the ~10 s model-load cost only once. The Stop hook talks to it
+# over loopback; ports / paths below are tuned for that contract.
+
+# Listen address of the local fish-speech API server.
+FISH_HOST = os.getenv("FISH_HOST", "127.0.0.1")
+FISH_PORT = int(os.getenv("FISH_PORT", "7867"))
+
+# Where downloaded fish-speech checkpoints live. The install script writes
+# weights here; the engine + server look here when starting up.
+FISH_MODEL_DIR = os.getenv(
+    "FISH_MODEL_DIR",
+    os.path.expanduser("~/.cache/fish-speech"),
+)
+
+# Optional zero-shot voice clone. Set FISH_REFERENCE_VOICE to a WAV/MP3
+# path (10-30 s, single speaker, clean) and FISH_REFERENCE_TEXT to the
+# transcript of that clip. Empty = use fish-speech's built-in preset
+# voice (no cloning).
+FISH_REFERENCE_VOICE = os.getenv("FISH_REFERENCE_VOICE", "")
+FISH_REFERENCE_TEXT = os.getenv("FISH_REFERENCE_TEXT", "")
+
+# How long to wait for the server's /docs endpoint to come up after we
+# spawn it. Fish-speech's first import (torch + transformers) is heavy;
+# 60 s is conservative for a cold start on a typical laptop GPU.
+FISH_STARTUP_TIMEOUT_SEC = float(os.getenv("FISH_STARTUP_TIMEOUT_SEC", "60"))
+
+# Per-request synthesis timeout (the server has the model loaded; this
+# is just the synth + HTTP round trip, normally <5 s).
+FISH_SYNTH_TIMEOUT_SEC = float(os.getenv("FISH_SYNTH_TIMEOUT_SEC", "30"))
+
+# After this many seconds of idle, the server frees VRAM and exits.
+# Subsequent requests will pay the cold-start cost again.
+FISH_IDLE_TIMEOUT_SEC = float(os.getenv("FISH_IDLE_TIMEOUT_SEC", "600"))
+
+# Force the server to run on CPU even when CUDA is present. Mainly for
+# debugging fallback behavior; CPU inference is ~10-20x slower so it's
+# rarely useful in production.
+FISH_FORCE_CPU = os.getenv("FISH_FORCE_CPU", "0") == "1"
+
+# Override command used to launch the fish-speech API server (advanced).
+# Leave empty to use the default `python -m tools.api_server ...` form
+# computed inside fish.py / fish_server.py. Pass a string and we'll
+# split it via shlex.
+FISH_SERVER_CMD = os.getenv("FISH_SERVER_CMD", "")
+
+# -------------------------------------------------------------------------
 
 LOG_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.log")

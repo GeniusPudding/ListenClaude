@@ -9,7 +9,7 @@
 ## 特色
 
 - **自動觸發** — Claude Code 的 `Stop` hook,Claude 回完話就播,完全免互動。
-- **四種 TTS 引擎** — 免費神經網路 (Edge)、OS 內建、純離線 (Piper)、頂級雲端 (ElevenLabs)。
+- **五種 TTS 引擎** — 免費神經網路 (Edge)、OS 內建、純離線 (Piper)、頂級雲端 (ElevenLabs)、本地 GPU 中英混 + 聲音克隆 (fish-speech)。
 - **即時切換朗讀詳細度** — `/listen <mode>` 隨時在簡答/詳答之間切。
 - **跳過廢話** — 太短的回應（如 "ok"）不念。
 - **多視窗 FIFO 排隊** — 每個視窗的摘要依完成順序逐一念,多個視窗同時結束也不會掉訊息。
@@ -99,6 +99,9 @@ Skill 從 voice ID 格式自動判斷引擎(`zh-TW-…Neural` → Edge、`zh_CN-
 | `system` | 免費 | 普通 | 無 | 不想連網、想最輕量 |
 | `piper` | 免費 | 高(神經網路) | 手動下載模型 | 純離線 / 不出網路 |
 | `elevenlabs` | 付費 | 頂級 | 需 API key | 對音質要求極高 |
+| `fish` | 免費* | 頂級 | `scripts/install-fish-speech` | 本地 GPU + 中英夾雜自然 + 可克隆任意聲音 |
+
+\* `fish` 跑起來免費,但要下載 ~2 GB 模型權重,實用上需要 CUDA(CPU 也能跑但慢 10–20 倍)。沒 CUDA / 模型 / server 時自動 fallback 到 `TTS_FALLBACK_ENGINE`(預設 `edge`),所以在沒 GPU 的機器上設成 `fish` 也不會壞。
 
 **Edge TTS** — 熱門中文聲音:`zh-TW-HsiaoChenNeural`(TW 女,預設)、`zh-TW-YunJheNeural`(TW 男)、`zh-CN-XiaoxiaoNeural`(CN 女)、`yue-HK-WanLungNeural`(粵語)。完整清單:`.venv/bin/edge-tts --list-voices`。
 
@@ -121,6 +124,27 @@ TTS_VOICE=<voice_id>
 ELEVENLABS_API_KEY=<你的金鑰>
 ```
 
+**fish-speech(本地 GPU)** — 中英夾雜自然 + 零樣本克隆任意聲音。一次性安裝:
+
+```bash
+.\scripts\install-fish-speech.ps1   # Windows
+bash scripts/install-fish-speech.sh # macOS / Linux
+```
+
+腳本會自動偵測 CUDA、裝對應的 PyTorch wheel(沒 GPU 就裝 CPU 版)、從 PyPI 裝 `fish-speech`、從 HuggingFace 下載 `fish-speech-1.5` 權重(~2 GB)到 `~/.cache/fish-speech`。然後 `.env`:
+
+```
+TTS_ENGINE=fish
+TTS_FALLBACK_ENGINE=edge        # 沒 CUDA / server 時走這個
+# 想克隆聲音(可選):
+FISH_REFERENCE_VOICE=voices/myvoice.wav   # 10-30 秒、單人、乾淨無雜音
+FISH_REFERENCE_TEXT=請輸入這段參考錄音的逐字稿
+```
+
+運作方式:冷啟動第一個回應會 spawn 一個 local HTTP server(`python -m tools.api_server`)把模型常駐在 VRAM。冷啟約 ~10 秒,之後每則回應 ~1–2 秒合成。Server 閒置超過 `FISH_IDLE_TIMEOUT_SEC`(預設 600 秒)會自己退出釋放 VRAM。
+
+整條鏈任何一環壞掉(沒 CUDA、fish-speech 沒裝、模型不在、server 掛了、網路錯誤),`fish.py` 都會默默 fallback 到 `TTS_FALLBACK_ENGINE`,確保聲音不會斷 — 所以 `TTS_ENGINE=fish` 連同 repo 整包丟到沒 GPU 的同事機器上,他那邊就會直接表現得像 Edge。
+
 ## 解除安裝
 
 ```bash
@@ -137,7 +161,8 @@ ELEVENLABS_API_KEY=<你的金鑰>
 | 變數 | 預設 | 說明 |
 |------|------|------|
 | `TTS_ENABLED` | `1` | `0` 暫停 TTS(不用 uninstall) |
-| `TTS_ENGINE` | `edge` | `edge` / `system` / `piper` / `elevenlabs` |
+| `TTS_ENGINE` | `edge` | `edge` / `system` / `piper` / `elevenlabs` / `fish` |
+| `TTS_FALLBACK_ENGINE` | `edge` | 主引擎失敗時用這個(例如 `fish` 偵測不到 CUDA)。不可設成 `fish` |
 | `TTS_VOICE` | `zh-TW-HsiaoChenNeural` | 引擎對應的 voice ID |
 | `TTS_MODE` | `progress` | `llm` / `progress` / `first` / `summary` / `full`;可用 `/listen <mode>` 即時切換 |
 | `TTS_LLM_MODEL` | `claude-haiku-4-5` | `TTS_MODE=llm` 時 `claude -p` 呼叫的模型 |
@@ -147,6 +172,15 @@ ELEVENLABS_API_KEY=<你的金鑰>
 | `TTS_RATE` | `200` | 大略 wpm |
 | `ANNOUNCE_PROJECT` | `1` | 在朗讀前先報專案 / 視窗名 |
 | `PIPER_VOICES_DIR` | `~/.cache/piper-voices` | Piper 模型檔目錄 |
+| `FISH_MODEL_DIR` | `~/.cache/fish-speech` | fish-speech 權重檔目錄 |
+| `FISH_HOST` / `FISH_PORT` | `127.0.0.1` / `7867` | 常駐 fish-speech API server 的位址 |
+| `FISH_REFERENCE_VOICE` | *(空)* | 零樣本聲音克隆的 WAV/MP3 路徑 |
+| `FISH_REFERENCE_TEXT` | *(空)* | 參考錄音的逐字稿(提升克隆品質) |
+| `FISH_STARTUP_TIMEOUT_SEC` | `60` | server 冷啟動的最長等待秒數 |
+| `FISH_SYNTH_TIMEOUT_SEC` | `30` | 單次合成請求的逾時 |
+| `FISH_IDLE_TIMEOUT_SEC` | `600` | server 閒置這麼久就退出釋放 VRAM |
+| `FISH_FORCE_CPU` | `0` | 強制 CPU 推論(除錯用) |
+| `FISH_SERVER_CMD` | *(空)* | 進階:完全覆蓋 server 啟動指令 |
 
 ## 運作原理
 
