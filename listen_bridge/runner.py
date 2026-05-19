@@ -1,8 +1,22 @@
 """Entry point invoked by Claude Code's Stop hook.
 
-Usage: stdin receives the hook JSON payload; this module reads it,
-extracts the last assistant message, prepares text per TTS_MODE, and
-hands it to the configured TTS engine.
+Architecture: producer + cooperative worker.
+
+Each hook invocation:
+  1. Resolves the spoken text (summarize / LLM rewrite happens here so
+     multiple windows summarize in parallel).
+  2. Drops a JSON file into QUEUE_DIR — filename is the wall-clock
+     timestamp so lexicographic sort = FIFO.
+  3. Tries to atomically claim the worker lock.
+     - Claimed: become the worker, drain QUEUE_DIR in order, speak each
+       item, delete each file. After the queue stays empty for
+       WORKER_GRACE_SEC, release the lock and exit.
+     - Already taken: spin until either our file is processed by the
+       current worker, or the lock goes stale and we can take over.
+
+Result: no message is ever silently dropped due to concurrent windows.
+Every Stop hook either gets spoken by someone, or is currently in the
+queue waiting its turn.
 """
 
 import json
@@ -11,6 +25,7 @@ import os.path
 import sys
 import threading
 import time
+import uuid
 
 from . import config, summarize, transcript, tts
 
@@ -42,8 +57,57 @@ def _project_name(payload: dict) -> str:
     return ""
 
 
+def _ensure_queue_dir() -> None:
+    try:
+        os.makedirs(config.QUEUE_DIR, exist_ok=True)
+    except OSError as e:
+        _log(f"failed to create queue dir {config.QUEUE_DIR}: {e}")
+
+
+def _enqueue(spoken: str, project: str) -> str:
+    """Write a request file to the queue and return its absolute path.
+
+    Uses an atomic write-then-rename so the worker never observes a
+    half-written JSON file (Windows + POSIX both honor os.replace).
+    """
+    _ensure_queue_dir()
+    # ns timestamp gives chronological order; pid + uuid break ties so
+    # two simultaneous windows never collide on the same filename.
+    name = f"{time.time_ns():020d}_{os.getpid()}_{uuid.uuid4().hex[:8]}.json"
+    path = os.path.join(config.QUEUE_DIR, name)
+    tmp = path + ".tmp"
+    payload = {"spoken": spoken, "project": project, "ts": time.time()}
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+    os.replace(tmp, path)
+    return path
+
+
+def _list_queue() -> list[str]:
+    """Return queued filenames sorted lexicographically (= chronologically)."""
+    try:
+        names = [n for n in os.listdir(config.QUEUE_DIR) if n.endswith(".json")]
+    except FileNotFoundError:
+        return []
+    except OSError:
+        return []
+    names.sort()
+    return names
+
+
+def _read_item(path: str) -> tuple[str | None, float]:
+    """Return (spoken_text, enqueue_ts). spoken_text is None on read failure."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError) as e:
+        _log(f"failed to read queue item {path}: {e}")
+        return None, 0.0
+    return data.get("spoken"), float(data.get("ts") or 0.0)
+
+
 def _try_claim_lock() -> bool:
-    """Atomically claim the lock file. Returns True on success."""
+    """Atomically claim the worker lock. Returns True on success."""
     try:
         fd = os.open(config.LOCK_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         try:
@@ -57,39 +121,90 @@ def _try_claim_lock() -> bool:
         return False
 
 
-def _acquire_lock(max_wait_sec: float = 240.0) -> bool:
-    """Wait up to max_wait_sec for the lock. Returns True if we got it.
-
-    While waiting, periodically clears stale locks (older than
-    LOCK_STALE_SEC) and bails out early if the user disables TTS via the
-    toggle marker.
-    """
-    deadline = time.time() + max_wait_sec
-    while time.time() < deadline:
-        # Clear stale lock (previous instance crashed / killed).
-        try:
-            if time.time() - os.path.getmtime(config.LOCK_PATH) >= config.LOCK_STALE_SEC:
-                try:
-                    os.unlink(config.LOCK_PATH)
-                except OSError:
-                    pass
-        except OSError:
-            pass
-
-        if _try_claim_lock():
-            return True
-
-        if not config.is_enabled():
-            return False
-        time.sleep(0.3)
-    return False
-
-
 def _release_lock() -> None:
     try:
         os.unlink(config.LOCK_PATH)
     except OSError:
         pass
+
+
+def _clear_stale_lock() -> None:
+    """Remove the lock file if its mtime hasn't been refreshed recently —
+    the worker that owned it must have died without releasing."""
+    try:
+        if time.time() - os.path.getmtime(config.LOCK_PATH) >= config.LOCK_STALE_SEC:
+            try:
+                os.unlink(config.LOCK_PATH)
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+
+def _run_worker() -> None:
+    """Drain the queue, speaking each item in chronological order.
+
+    Caller must hold the worker lock. Heartbeats lock mtime every few
+    seconds so other processes don't consider it stale during long
+    playback. Exits after the queue has stayed empty for
+    WORKER_GRACE_SEC, which avoids a thundering-handoff race during
+    bursty arrivals.
+    """
+    stop_beat = threading.Event()
+
+    def _heartbeat() -> None:
+        while not stop_beat.wait(5.0):
+            try:
+                os.utime(config.LOCK_PATH, None)
+            except OSError:
+                return
+
+    beat = threading.Thread(target=_heartbeat, daemon=True)
+    beat.start()
+
+    try:
+        idle_since: float | None = None
+        while True:
+            if not config.is_enabled():
+                # User toggled TTS off mid-playback. Stop draining; leftover
+                # items will either be cleaned up by their producers (which
+                # also notice the toggle) or aged out by QUEUE_MAX_AGE_SEC.
+                return
+
+            files = _list_queue()
+            if files:
+                idle_since = None
+                name = files[0]
+                path = os.path.join(config.QUEUE_DIR, name)
+                spoken, ts = _read_item(path)
+                # Delete first so a TTS crash doesn't cause re-speaking
+                # via stale-lock recovery.
+                try:
+                    os.unlink(path)
+                except OSError:
+                    pass
+                if not spoken:
+                    continue
+                if ts and time.time() - ts > config.QUEUE_MAX_AGE_SEC:
+                    _log(f"drop stale queue item (age {time.time() - ts:.0f}s): {spoken[:40]}")
+                    continue
+                _log(f"speak ({config.TTS_ENGINE} / {config.TTS_VOICE or 'default'}): {spoken[:80]}")
+                try:
+                    tts.speak(spoken)
+                except Exception as e:
+                    _log(f"tts.speak failed: {e}")
+                continue
+
+            # Queue is empty — start (or continue) the grace timer.
+            now = time.time()
+            if idle_since is None:
+                idle_since = now
+            elif now - idle_since >= config.WORKER_GRACE_SEC:
+                return
+            time.sleep(0.2)
+    finally:
+        stop_beat.set()
+        beat.join(timeout=1.0)
 
 
 def main() -> int:
@@ -118,39 +233,43 @@ def main() -> int:
         _log(f"skip (too short): {text[:40]}")
         return 0
 
-    if not _acquire_lock():
-        _log("timed out waiting in TTS queue; dropping")
-        return 0
+    # Resolve the spoken text in the producer so multiple windows summarize
+    # in parallel; the worker just plays audio sequentially.
+    project = _project_name(payload) if config.ANNOUNCE_PROJECT else ""
+    spoken = summarize.prepare_text(text, config.TTS_MODE, config.TTS_MAX_CHARS)
+    if project:
+        spoken = f"{project}: {spoken}"
 
-    # Heartbeat: refresh lock mtime every few seconds so concurrent waiters
-    # don't consider it stale during long playback. Without this, a TTS
-    # session longer than LOCK_STALE_SEC would let the next queued hook
-    # barge in and start speaking on top of us.
-    stop_beat = threading.Event()
+    qfile = _enqueue(spoken, project)
+    _log(f"enqueued {os.path.basename(qfile)}: {spoken[:60]}")
 
-    def _heartbeat() -> None:
-        while not stop_beat.wait(5.0):
+    # Try to become the worker. If someone else already is, sit in a
+    # short loop until either (a) our file gets processed by them, or
+    # (b) the lock goes stale and we can take over. No timeout —
+    # dropping a message is worse than waiting.
+    while True:
+        if not config.is_enabled():
+            # User disabled TTS while we waited. Withdraw our queued file
+            # so the next worker doesn't speak it later.
             try:
-                os.utime(config.LOCK_PATH, None)
+                os.unlink(qfile)
             except OSError:
-                return
+                pass
+            return 0
 
-    beat = threading.Thread(target=_heartbeat, daemon=True)
-    beat.start()
+        if _try_claim_lock():
+            try:
+                _run_worker()
+            finally:
+                _release_lock()
+            return 0
 
-    try:
-        spoken = summarize.prepare_text(text, config.TTS_MODE, config.TTS_MAX_CHARS)
-        if config.ANNOUNCE_PROJECT:
-            project = _project_name(payload)
-            if project:
-                spoken = f"{project}: {spoken}"
-        _log(f"speak ({config.TTS_ENGINE} / {config.TTS_VOICE or 'default'}): {spoken[:80]}")
-        tts.speak(spoken)
-    finally:
-        stop_beat.set()
-        beat.join(timeout=1.0)
-        _release_lock()
-    return 0
+        # Someone else is the worker — has our file already been picked up?
+        if not os.path.exists(qfile):
+            return 0
+
+        _clear_stale_lock()
+        time.sleep(0.3)
 
 
 if __name__ == "__main__":

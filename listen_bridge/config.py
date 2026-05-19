@@ -55,11 +55,28 @@ TTS_ENABLED = os.getenv("TTS_ENABLED", "1") == "1"
 # multiple Claude sessions are open. Set to 0 to disable.
 ANNOUNCE_PROJECT = os.getenv("ANNOUNCE_PROJECT", "1") == "1"
 
-# Path of a lock file used to skip TTS when another instance is already
-# speaking — avoids overlapping audio when multiple Claude windows finish
-# at roughly the same time.
+# Worker lock — held by whichever process is currently draining the
+# spoken queue. Other hooks enqueue their item and either become the
+# worker themselves (if the lock is free) or wait for the current worker
+# to pick up their file. Avoids overlapping audio AND dropped messages
+# when multiple Claude windows finish at roughly the same time.
 LOCK_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.lock")
 LOCK_STALE_SEC = float(os.getenv("LOCK_STALE_SEC", "60"))
+
+# Pending TTS requests live as JSON files in this directory; filenames
+# are nanosecond timestamps so plain lexicographic sort = FIFO order.
+QUEUE_DIR = os.path.join(tempfile.gettempdir(), "listen-claude-queue")
+
+# After the queue empties, the worker keeps the lock for this long
+# before releasing it. Lets late-arriving requests be picked up by the
+# current worker rather than handing off to a new process (which would
+# briefly delay playback and risk a race during handoff).
+WORKER_GRACE_SEC = float(os.getenv("WORKER_GRACE_SEC", "2.0"))
+
+# Items older than this (by their wall-clock enqueue time) are dropped
+# without speaking. Guards against the worker replaying stale text that
+# was orphaned by an earlier crash hours/days ago.
+QUEUE_MAX_AGE_SEC = float(os.getenv("QUEUE_MAX_AGE_SEC", "300"))
 
 # Runtime toggle marker — if this file exists, TTS is disabled regardless
 # of TTS_ENABLED. Created/removed by scripts/toggle.{ps1,sh} for fast on/off

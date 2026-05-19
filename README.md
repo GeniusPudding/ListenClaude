@@ -12,7 +12,7 @@ Companion to [Kaikou-Claude](https://github.com/GeniusPudding/Kaikou-Claude) (vo
 - **Four TTS engines** — free neural (Edge), OS built-in, fully offline (Piper), or premium cloud (ElevenLabs).
 - **Runtime mode switch** — flip between brief and detailed spoken replies via `/listen <mode>`.
 - **Skip-short threshold** — won't read trivial "ok" responses.
-- **Queue for concurrent windows** — multiple Claude sessions don't overlap audio.
+- **FIFO queue across windows** — every Claude session's summary is spoken in turn; nothing is dropped when several windows finish at once.
 
 ## Platform support
 
@@ -159,10 +159,15 @@ listen_bridge.runner:
   1. Parse last assistant message from the hook payload
   2. Apply TTS_MODE (llm / progress / brief / summary / full) — for `llm`,
      call `claude -p` to rewrite the response as a natural spoken summary
-  3. Strip code blocks and markdown noise
-  4. Truncate to TTS_MAX_CHARS
-  5. Acquire the per-host lock (queue if another window is speaking)
-  6. Dispatch to TTS_ENGINE
+  3. Strip code blocks and markdown noise; truncate to TTS_MAX_CHARS
+  4. Enqueue the resolved text in $TMPDIR/listen-claude-queue/
+        (filename = ns timestamp, so plain sort = FIFO across windows)
+  5. Try to atomically claim the worker lock:
+        - Claimed → drain the queue in order, speaking each item; release
+          after the queue stays empty for WORKER_GRACE_SEC.
+        - Already held → wait until our file is consumed by the current
+          worker, or the lock goes stale (LOCK_STALE_SEC) and we take over.
+  6. TTS_ENGINE plays the audio
         ↓
 TTS engine plays audio in the background — never blocks Claude Code.
 ```

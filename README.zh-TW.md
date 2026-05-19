@@ -12,7 +12,7 @@
 - **四種 TTS 引擎** — 免費神經網路 (Edge)、OS 內建、純離線 (Piper)、頂級雲端 (ElevenLabs)。
 - **即時切換朗讀詳細度** — `/listen <mode>` 隨時在簡答/詳答之間切。
 - **跳過廢話** — 太短的回應（如 "ok"）不念。
-- **多視窗排隊** — 多個 Claude session 不會疊音播放。
+- **多視窗 FIFO 排隊** — 每個視窗的摘要依完成順序逐一念,多個視窗同時結束也不會掉訊息。
 
 ## 平台支援
 
@@ -159,10 +159,14 @@ listen_bridge.runner:
   1. 從 payload 解出最後一則 assistant message
   2. 套用 TTS_MODE(llm / progress / brief / summary / full) — `llm` 模式
      會叫 `claude -p` 改寫成自然口語摘要
-  3. 去掉 code block 跟 markdown 噪音
-  4. 截斷到 TTS_MAX_CHARS
-  5. 拿 per-host lock(若有其他視窗在播就排隊)
-  6. 派給 TTS_ENGINE
+  3. 去掉 code block / markdown 噪音,截斷到 TTS_MAX_CHARS
+  4. 把改寫後的文字寫進 $TMPDIR/listen-claude-queue/
+        (檔名 = ns 時間戳,直接 sort = 跨視窗 FIFO)
+  5. 嘗試原子搶 worker lock:
+        - 搶到 → 依序念完 queue,空了再守 WORKER_GRACE_SEC 才放鎖
+        - 沒搶到 → 等到自己的檔被 worker 念掉,或 lock 變 stale
+          (LOCK_STALE_SEC)由我們接手
+  6. TTS_ENGINE 播音
         ↓
 TTS 在背景播音 — 不會阻塞 Claude Code。
 ```
