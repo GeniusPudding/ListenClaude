@@ -7,3 +7,6 @@ venv/
 .vscode/
 .idea/
 *.wav
+
+# Claude Code per-user permissions; project-shared settings.json may still be tracked.
+.claude/settings.local.json
