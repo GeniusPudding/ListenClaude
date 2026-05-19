@@ -4,6 +4,8 @@
 #   .\scripts\toggle.ps1 on               force on
 #   .\scripts\toggle.ps1 off              force off
 #   .\scripts\toggle.ps1 status           print on/off state
+#   .\scripts\toggle.ps1 llm              Claude-rewritten spoken summary (TTS_MODE=llm)
+#   .\scripts\toggle.ps1 smart            alias for llm
 #   .\scripts\toggle.ps1 brief            short reading (TTS_MODE=first)
 #   .\scripts\toggle.ps1 progress         intro + bullets (TTS_MODE=progress)
 #   .\scripts\toggle.ps1 summary          first sentence per paragraph
@@ -22,8 +24,9 @@ $aliases = @{
     'short'    = 'first'
     'detailed' = 'full'
     'long'     = 'full'
+    'smart'    = 'llm'
 }
-$validModes = @('first', 'progress', 'summary', 'full')
+$validModes = @('first', 'progress', 'summary', 'full', 'llm')
 
 $action = $Action.ToLower()
 if ($aliases.ContainsKey($action)) { $action = $aliases[$action] }

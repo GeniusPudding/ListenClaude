@@ -58,15 +58,18 @@ cd Listen-Claude
 /listen status    → 查狀態
 ```
 
-**朗讀模式**(簡答 ↔ 詳答,隨時切):
+**朗讀模式**(每則回應怎麼被改寫成口語):
 
 ```
-/listen brief     → 只念開頭一段
-/listen progress  → 開頭 + 前 ~4 個 bullet(預設)
-/listen summary   → 每段第一句 + 標題
+/listen llm       → 用 Claude 改寫成自然口語摘要(~$0.001 / 則)
+/listen brief     → 只念開頭一段(啟發式)
+/listen progress  → 開頭 + 前 ~4 個 bullet(預設,啟發式)
+/listen summary   → 每段第一句 + 標題(啟發式)
 /listen detailed  → 整則回應全念
 /listen mode      → 印出目前模式
 ```
+
+`/listen llm`(別名 `smart`)會呼叫本地 `claude -p`(預設 Haiku)把每則回應改寫成自然口語摘要 — 不會念出 markdown、code block、URL 等。會多 ~3–8 秒延遲;若 CLI 不存在或失敗會 fallback 到 `progress`。
 
 等價腳本(skill 底下就是叫它):
 
@@ -136,7 +139,9 @@ ELEVENLABS_API_KEY=<你的金鑰>
 | `TTS_ENABLED` | `1` | `0` 暫停 TTS(不用 uninstall) |
 | `TTS_ENGINE` | `edge` | `edge` / `system` / `piper` / `elevenlabs` |
 | `TTS_VOICE` | `zh-TW-HsiaoChenNeural` | 引擎對應的 voice ID |
-| `TTS_MODE` | `progress` | `progress` / `first` / `summary` / `full`;可用 `/listen <mode>` 即時切換 |
+| `TTS_MODE` | `progress` | `llm` / `progress` / `first` / `summary` / `full`;可用 `/listen <mode>` 即時切換 |
+| `TTS_LLM_MODEL` | `claude-haiku-4-5` | `TTS_MODE=llm` 時 `claude -p` 呼叫的模型 |
+| `TTS_LLM_TIMEOUT_SEC` | `60` | LLM 改寫超過此秒數就 fallback 到 `progress` |
 | `TTS_MIN_WORDS` | `20` | 短於此字數的回應不念 |
 | `TTS_MAX_CHARS` | `500` | 截斷過長回應 |
 | `TTS_RATE` | `200` | 大略 wpm |
@@ -152,7 +157,8 @@ scripts/stop_hook_entry.py 從 stdin 收 JSON
         ↓
 listen_bridge.runner:
   1. 從 payload 解出最後一則 assistant message
-  2. 套用 TTS_MODE(progress / brief / summary / full)
+  2. 套用 TTS_MODE(llm / progress / brief / summary / full) — `llm` 模式
+     會叫 `claude -p` 改寫成自然口語摘要
   3. 去掉 code block 跟 markdown 噪音
   4. 截斷到 TTS_MAX_CHARS
   5. 拿 per-host lock(若有其他視窗在播就排隊)

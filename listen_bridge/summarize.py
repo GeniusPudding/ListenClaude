@@ -106,17 +106,26 @@ def heuristic_summary(text: str) -> str:
 
 def prepare_text(text: str, mode: str, max_chars: int) -> str:
     """Apply the configured summarization mode and truncate to max_chars."""
-    text = strip_markdown_noise(text)
-    if mode == "full":
-        result = text
-    elif mode == "first":
-        result = first_paragraph(text)
-    elif mode == "summary":
-        result = heuristic_summary(text)
-    elif mode == "progress":
-        result = progress_summary(text)
+    if mode == "llm":
+        from . import llm
+        rewritten = llm.summarize_via_claude(text)
+        if rewritten:
+            result = rewritten
+        else:
+            # CLI missing or call failed — fall back to the best heuristic.
+            result = progress_summary(strip_markdown_noise(text))
     else:
-        result = text
+        text = strip_markdown_noise(text)
+        if mode == "full":
+            result = text
+        elif mode == "first":
+            result = first_paragraph(text)
+        elif mode == "summary":
+            result = heuristic_summary(text)
+        elif mode == "progress":
+            result = progress_summary(text)
+        else:
+            result = text
     if len(result) > max_chars:
         result = result[: max_chars - 1].rstrip() + "…"
     return result

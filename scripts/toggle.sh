@@ -5,6 +5,8 @@
 #   bash scripts/toggle.sh on               force on
 #   bash scripts/toggle.sh off              force off
 #   bash scripts/toggle.sh status           print on/off state
+#   bash scripts/toggle.sh llm              Claude-rewritten spoken summary (TTS_MODE=llm)
+#   bash scripts/toggle.sh smart            alias for llm
 #   bash scripts/toggle.sh brief            short reading (TTS_MODE=first)
 #   bash scripts/toggle.sh progress         intro + bullets (TTS_MODE=progress)
 #   bash scripts/toggle.sh summary          first sentence per paragraph
@@ -23,6 +25,7 @@ action="$(echo "$action" | tr '[:upper:]' '[:lower:]')"
 case "$action" in
     brief|short)    action="first" ;;
     detailed|long)  action="full"  ;;
+    smart)          action="llm"   ;;
 esac
 
 set_mode() {
@@ -52,7 +55,7 @@ get_mode() {
 }
 
 case "$action" in
-    first|progress|summary|full)
+    first|progress|summary|full|llm)
         set_mode "$action"; exit 0
         ;;
     mode)

@@ -1,6 +1,6 @@
 ---
 name: listen
-description: Control Listen-Claude TTS readback of Claude responses. Toggle on/off (`on`, `off`, `status`, no arg) or change reading length (`brief`, `progress`, `summary`, `detailed`, `mode`). Use whenever the user asks to mute/unmute Claude's voice, switch between short and detailed spoken replies, or check current state.
+description: Control Listen-Claude TTS readback of Claude responses. Toggle on/off (`on`, `off`, `status`, no arg) or change reading style (`llm`/`smart`, `brief`, `progress`, `summary`, `detailed`, `mode`). Use whenever the user asks to mute/unmute Claude's voice, switch between brief / detailed / LLM-rewritten spoken replies, or check current state.
 ---
 
 # Listen — control Claude voice readback
@@ -18,13 +18,14 @@ The user's intent is encoded in the argument. Two groups:
 | `off` | force disable |
 | `status` | report state without changing |
 
-**Reading mode** (how much of each response is read aloud):
+**Reading mode** (how each response is rewritten for speech):
 
 | Arg | Effect | Underlying `TTS_MODE` |
 |-----|--------|-----------------------|
-| `brief` / `short` | only the opening paragraph | `first` |
-| `progress` | opening + first ~4 bullets (default) | `progress` |
-| `summary` | first sentence of every paragraph + headings | `summary` |
+| `llm` / `smart` | Claude-rewritten natural spoken summary, no markdown/symbols (~$0.001 / response, +3-8s latency) | `llm` |
+| `brief` / `short` | only the opening paragraph (heuristic) | `first` |
+| `progress` | opening + first ~4 bullets (heuristic, default) | `progress` |
+| `summary` | first sentence of every paragraph + headings (heuristic) | `summary` |
 | `detailed` / `long` | read the entire response | `full` |
 | `mode` | report current mode without changing | — |
 

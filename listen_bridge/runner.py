@@ -96,6 +96,12 @@ def main() -> int:
     if not config.is_enabled():
         return 0
 
+    # If we're the `claude -p` subprocess spawned by TTS_MODE=llm, the
+    # Stop hook fires again — bail out so we don't recurse forever.
+    from . import llm
+    if llm.is_inner_summarization_call():
+        return 0
+
     raw = sys.stdin.read()
     try:
         payload = json.loads(raw, strict=False)

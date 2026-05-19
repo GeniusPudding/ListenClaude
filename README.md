@@ -58,15 +58,18 @@ One skill controls both on/off and reading length. All changes take effect on th
 /listen status    → report state
 ```
 
-**Reading mode** (brief ↔ detailed, switch any time):
+**Reading mode** (how each response is rewritten for speech):
 
 ```
-/listen brief     → opening paragraph only
-/listen progress  → opening + first ~4 bullets (default)
-/listen summary   → first sentence per paragraph + headings
+/listen llm       → Claude-rewritten natural spoken summary (~$0.001 / response)
+/listen brief     → opening paragraph only (heuristic)
+/listen progress  → opening + first ~4 bullets (default, heuristic)
+/listen summary   → first sentence per paragraph + headings (heuristic)
 /listen detailed  → full response
 /listen mode      → report current mode
 ```
+
+`/listen llm` (alias `smart`) calls the local `claude -p` CLI (Haiku by default) to rewrite each response into a natural spoken summary — free of markdown, code blocks, URLs, etc. Adds ~3–8 s latency before audio starts; falls back to `progress` if the CLI is missing or fails.
 
 Equivalent script (skill calls this under the hood):
 
@@ -136,7 +139,9 @@ Removes the Stop hook from `~/.claude/settings.json`. Repo files stay on disk.
 | `TTS_ENABLED` | `1` | `0` disables without uninstalling. |
 | `TTS_ENGINE` | `edge` | `edge`, `system`, `piper`, or `elevenlabs`. |
 | `TTS_VOICE` | `zh-TW-HsiaoChenNeural` | Engine-specific voice ID. |
-| `TTS_MODE` | `progress` | `progress`, `first`, `summary`, or `full`. Switchable at runtime via `/listen <mode>`. |
+| `TTS_MODE` | `progress` | `llm`, `progress`, `first`, `summary`, or `full`. Switchable at runtime via `/listen <mode>`. |
+| `TTS_LLM_MODEL` | `claude-haiku-4-5` | Model `claude -p` calls when `TTS_MODE=llm`. |
+| `TTS_LLM_TIMEOUT_SEC` | `60` | Give up on the LLM rewrite after this many seconds and fall back to `progress`. |
 | `TTS_MIN_WORDS` | `20` | Skip TTS if response shorter than this. |
 | `TTS_MAX_CHARS` | `500` | Truncate longer responses. |
 | `TTS_RATE` | `200` | Rough words-per-minute (engine-specific mapping). |
@@ -152,7 +157,8 @@ scripts/stop_hook_entry.py receives JSON on stdin
         ↓
 listen_bridge.runner:
   1. Parse last assistant message from the hook payload
-  2. Apply TTS_MODE (progress / brief / summary / full)
+  2. Apply TTS_MODE (llm / progress / brief / summary / full) — for `llm`,
+     call `claude -p` to rewrite the response as a natural spoken summary
   3. Strip code blocks and markdown noise
   4. Truncate to TTS_MAX_CHARS
   5. Acquire the per-host lock (queue if another window is speaking)

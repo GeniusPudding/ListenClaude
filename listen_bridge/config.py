@@ -23,12 +23,20 @@ TTS_ENGINE = os.getenv("TTS_ENGINE", "system").lower()
 TTS_VOICE = os.getenv("TTS_VOICE", "")
 
 # Reading mode:
-#   "progress" (default) — opening sentence + first ~4 bullet items, the
-#                          "what was done this turn" view.
+#   "llm"       — call `claude -p` (Haiku by default) to rewrite the
+#                 response as a natural spoken summary, free of markdown
+#                 / symbols / code. Best quality, costs ~$0.001 per
+#                 response, adds ~3-8s latency. Falls back to "progress"
+#                 if the CLI is missing or fails.
+#   "progress"  — opening sentence + first ~4 bullet items (heuristic).
 #   "full"      — read the entire last assistant message.
 #   "first"     — only the first paragraph.
 #   "summary"   — every paragraph's first sentence + headings.
 TTS_MODE = os.getenv("TTS_MODE", "progress")
+
+# When TTS_MODE=llm, which model `claude -p` should call.
+TTS_LLM_MODEL = os.getenv("TTS_LLM_MODEL", "claude-haiku-4-5")
+TTS_LLM_TIMEOUT_SEC = float(os.getenv("TTS_LLM_TIMEOUT_SEC", "60"))
 
 # Skip TTS if message has fewer words than this (avoid reading "ok").
 TTS_MIN_WORDS = int(os.getenv("TTS_MIN_WORDS", "20"))
