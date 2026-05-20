@@ -39,7 +39,12 @@ if ($nvidiaSmi) {
             # available wheel tag for the driver's CUDA version.
             $major = [int]$m.Groups[1].Value
             $minor = [int]$m.Groups[2].Value
-            if     ($major -ge 12 -and $minor -ge 4) { $cudaTag = 'cu124' }
+            # NVIDIA drivers are forward-compatible with older CUDA toolkits,
+            # so we always pick the newest PyTorch wheel tag the driver can
+            # run. Mapping based on what download.pytorch.org actually ships.
+            if     ($major -ge 13)                   { $cudaTag = 'cu128' }
+            elseif ($major -ge 12 -and $minor -ge 8) { $cudaTag = 'cu128' }
+            elseif ($major -ge 12 -and $minor -ge 4) { $cudaTag = 'cu124' }
             elseif ($major -ge 12)                   { $cudaTag = 'cu121' }
             elseif ($major -ge 11 -and $minor -ge 8) { $cudaTag = 'cu118' }
             else                                     { $cudaTag = 'cu121' }

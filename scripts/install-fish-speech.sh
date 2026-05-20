@@ -34,7 +34,13 @@ if command -v nvidia-smi >/dev/null 2>&1; then
             major="${BASH_REMATCH[1]}"
             minor="${BASH_REMATCH[2]}"
             cuda_version="$major.$minor"
-            if   (( major >= 12 && minor >= 4 )); then cuda_tag="cu124"
+            # NVIDIA drivers are forward-compatible with older CUDA
+            # toolkits, so we always pick the newest PyTorch wheel tag the
+            # driver can run. Mapping based on what download.pytorch.org
+            # actually ships.
+            if   (( major >= 13 ));                then cuda_tag="cu128"
+            elif (( major >= 12 && minor >= 8 ));  then cuda_tag="cu128"
+            elif (( major >= 12 && minor >= 4 ));  then cuda_tag="cu124"
             elif (( major >= 12 ));                then cuda_tag="cu121"
             elif (( major == 11 && minor >= 8 ));  then cuda_tag="cu118"
             else                                        cuda_tag="cu121"; fi
