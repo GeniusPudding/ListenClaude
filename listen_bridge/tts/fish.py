@@ -134,14 +134,20 @@ def _is_port_open(timeout: float = 0.3) -> bool:
 
 
 def _server_alive(timeout: float = 1.0) -> bool:
-    """Full health check: socket open AND /docs (FastAPI default) responds."""
-    if not _is_port_open(timeout=0.3):
-        return False
-    try:
-        with urllib.request.urlopen(_server_url("/docs"), timeout=timeout) as r:
-            return 200 <= r.status < 400
-    except Exception:
-        return False
+    """Health check — port-open is enough to count as alive.
+
+    The fish-speech `kui` ASGI handler is single-threaded for /v1/tts,
+    so a server mid-synth can't respond to /docs within our HTTP
+    timeout. Treating that as 'dead' caused a fatal cascade: client
+    would try to spawn a new server, hit port-collision, fail, and
+    fall back to Edge — even though the original server was alive and
+    about to return audio.
+
+    A bound TCP listener with no recent close is strong evidence the
+    server process is running. Stale TIME_WAIT sockets without an
+    owning listener won't pass the SYN check.
+    """
+    return _is_port_open(timeout=0.5)
 
 
 def _build_server_cmd() -> list[str]:
@@ -164,6 +170,7 @@ def _build_server_cmd() -> list[str]:
     )
     cmd = [
         sys.executable, "-m", "tools.api_server",
+        "--mode", "tts",
         "--listen", f"{config.FISH_HOST}:{config.FISH_PORT}",
         "--llama-checkpoint-path", config.FISH_MODEL_DIR,
         "--decoder-checkpoint-path", decoder_pth,
@@ -176,11 +183,22 @@ def _build_server_cmd() -> list[str]:
 
 def _try_start_server() -> bool:
     """Spawn the API server as a detached background process and wait
-    until /docs responds (or FISH_STARTUP_TIMEOUT_SEC elapses).
+    until it responds (or FISH_STARTUP_TIMEOUT_SEC elapses).
 
     Detached so that when the Stop-hook Python exits, the server keeps
     running for the next hook to reuse.
+
+    Cascade guard: if FISH_PORT is already bound, another process (a
+    parallel Stop hook from a sibling window, or a manually-started
+    server) is already running or starting one. Trust it and skip the
+    spawn — otherwise multiple concurrent spawns race to bind the same
+    port, all but one hit WinError 10048, and the survivors eventually
+    timeout the caller too.
     """
+    if _is_port_open(timeout=0.3):
+        _log("port already bound — trusting existing server")
+        return True
+
     cmd = _build_server_cmd()
     _log(f"starting server: {' '.join(cmd)}")
 
@@ -231,35 +249,205 @@ def _try_start_server() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Text preprocessing — works around fish-speech 1.5 weaknesses on numbers
+# and Chinese/English code-switching. These mutate the user-visible spoken
+# string, so be conservative.
+
+_DIGITS_ZH = "零一二三四五六七八九"
+
+
+def _digits_to_chinese(text: str) -> str:
+    """Convert Arabic numeric runs to Chinese characters. fish-speech's
+    Chinese tokenizer doesn't know how to read `199` or `30` — without
+    this it would spell digits letter-by-letter or skip the run. Handles
+    up to 5-digit integers (which covers 99% of summary text); longer
+    numbers are read digit-by-digit as a fallback."""
+    import re
+
+    def _convert_int(n: int) -> str:
+        if n == 0:
+            return "零"
+        if n < 10:
+            return _DIGITS_ZH[n]
+        if n < 100:
+            tens, ones = divmod(n, 10)
+            out = ("" if tens == 1 else _DIGITS_ZH[tens]) + "十"
+            if ones:
+                out += _DIGITS_ZH[ones]
+            return out
+        if n < 1000:
+            hundreds, rem = divmod(n, 100)
+            out = _DIGITS_ZH[hundreds] + "百"
+            if rem == 0:
+                return out
+            if rem < 10:
+                return out + "零" + _DIGITS_ZH[rem]
+            return out + _convert_int(rem)
+        if n < 10000:
+            thousands, rem = divmod(n, 1000)
+            out = _DIGITS_ZH[thousands] + "千"
+            if rem == 0:
+                return out
+            if rem < 100:
+                return out + "零" + _convert_int(rem)
+            return out + _convert_int(rem)
+        if n < 100000:
+            wan, rem = divmod(n, 10000)
+            out = _DIGITS_ZH[wan] + "萬"
+            if rem == 0:
+                return out
+            if rem < 1000:
+                return out + "零" + _convert_int(rem)
+            return out + _convert_int(rem)
+        # Too large — read digit by digit.
+        return "".join(_DIGITS_ZH[int(d)] for d in str(n))
+
+    return re.sub(
+        r"\d+",
+        lambda m: _convert_int(int(m.group(0))),
+        text,
+    )
+
+
+def _space_around_english(text: str) -> str:
+    """Insert spaces around runs of ASCII letters so fish-speech treats
+    them as discrete English words rather than gluing them onto adjacent
+    Chinese characters. `API、commit` → ` API 、 commit `. Idempotent
+    over already-spaced text."""
+    import re
+
+    # Surround any run of ASCII letters (with optional internal hyphens or
+    # dots, e.g. fish-speech, claude.ai) with single spaces.
+    out = re.sub(r"([A-Za-z][A-Za-z\-.]*[A-Za-z]|[A-Za-z])", r" \1 ", text)
+    # Collapse runs of whitespace.
+    return re.sub(r" +", " ", out).strip()
+
+
+def _preprocess_for_fish(text: str) -> str:
+    """Full preprocessor: digit normalization + English word spacing."""
+    return _space_around_english(_digits_to_chinese(text))
+
+
+# ---------------------------------------------------------------------------
+# Voice profile loading.
+
+def _load_voice_refs() -> list[dict]:
+    """Resolve the list of references to send with each synthesis request.
+
+    Order of preference:
+      1. FISH_VOICE_DIR set → load all (ref*.wav, ref*.txt) pairs in the
+         directory. If a config.json exists, honor its `references` list
+         instead (explicit ordering / partial subset).
+      2. FISH_REFERENCE_VOICE + FISH_REFERENCE_TEXT set (legacy) → single
+         reference pair.
+      3. Neither set → empty list (fish-speech uses its preset voice).
+
+    Returns a list of {"audio": <base64>, "text": <transcript>} dicts
+    ready for the /v1/tts request body.
+    """
+    import base64
+
+    refs: list[tuple[str, str]] = []  # (audio_path, transcript)
+
+    if config.FISH_VOICE_DIR and os.path.isdir(config.FISH_VOICE_DIR):
+        cfg_path = os.path.join(config.FISH_VOICE_DIR, "config.json")
+        if os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                for entry in cfg.get("references", []):
+                    a = os.path.join(config.FISH_VOICE_DIR, entry["audio"])
+                    t_field = entry.get("text", "")
+                    if not t_field and entry.get("text_file"):
+                        t_field = open(
+                            os.path.join(config.FISH_VOICE_DIR, entry["text_file"]),
+                            encoding="utf-8",
+                        ).read().strip()
+                    refs.append((a, t_field))
+            except (OSError, json.JSONDecodeError, KeyError) as e:
+                _log(f"voice config.json malformed ({e}); falling back to auto-scan")
+                refs = []
+
+        if not refs:
+            # Auto-scan: every reference*.wav with matching .txt.
+            for name in sorted(os.listdir(config.FISH_VOICE_DIR)):
+                if not name.endswith(".wav") or not name.startswith("reference"):
+                    continue
+                wav = os.path.join(config.FISH_VOICE_DIR, name)
+                txt = os.path.join(config.FISH_VOICE_DIR, name[:-4] + ".txt")
+                t = ""
+                if os.path.isfile(txt):
+                    try:
+                        with open(txt, encoding="utf-8") as f:
+                            t = f.read().strip()
+                    except OSError:
+                        pass
+                refs.append((wav, t))
+
+    elif config.FISH_REFERENCE_VOICE and os.path.isfile(config.FISH_REFERENCE_VOICE):
+        refs.append((config.FISH_REFERENCE_VOICE, config.FISH_REFERENCE_TEXT or ""))
+
+    out: list[dict] = []
+    for wav, t in refs:
+        try:
+            with open(wav, "rb") as f:
+                out.append({
+                    "audio": base64.b64encode(f.read()).decode("ascii"),
+                    "text": t,
+                })
+        except OSError as e:
+            _log(f"skipping ref {wav}: {e}")
+    if out:
+        _log(f"loaded {len(out)} voice reference(s)")
+    return out
+
+
+def _load_synth_params() -> dict:
+    """Read synthesis params from voices/<dir>/config.json if present,
+    falling back to v3-tuned defaults (the configuration that produced
+    the best zh+en balance during Listen-Claude voice cloning tests)."""
+    defaults = {
+        "format": "wav",
+        "chunk_length": 100,
+        "max_new_tokens": 800,
+        "top_p": 0.7,
+        "repetition_penalty": 1.2,
+        "temperature": 0.4,
+    }
+    if config.FISH_VOICE_DIR and os.path.isdir(config.FISH_VOICE_DIR):
+        cfg_path = os.path.join(config.FISH_VOICE_DIR, "config.json")
+        if os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path, "r", encoding="utf-8") as f:
+                    cfg = json.load(f)
+                synth = cfg.get("synthesis", {})
+                # Only honor known keys; ignore extras.
+                for k in defaults:
+                    if k in synth:
+                        defaults[k] = synth[k]
+            except (OSError, json.JSONDecodeError):
+                pass
+    return defaults
+
+
+# ---------------------------------------------------------------------------
 # Synthesis request.
 
 def _request_synthesis(text: str) -> bytes | None:
     """POST text to the server, return WAV bytes on success or None on
-    any failure. Includes optional reference audio for zero-shot cloning."""
-    body: dict = {
-        "text": text,
-        # fish-speech v1.5 API accepts these top-level fields:
-        "format": "wav",
-        "chunk_length": 200,
-        "max_new_tokens": 1024,
-        "top_p": 0.7,
-        "repetition_penalty": 1.2,
-        "temperature": 0.7,
-    }
+    any failure. Bundles the configured voice references."""
+    # Empirical: the digit-to-Chinese + English-spacing preprocessor
+    # _looked_ helpful in isolated tests but actually degrades production
+    # quality. Live Listen-Claude text mentions PIDs / ports / sizes
+    # ("15416", "7867") which the digit converter expands to long Chinese
+    # readings ("一萬五千四百一十六") that fish-speech 1.5 struggles to
+    # generate cleanly. Sending raw text matches the configuration that
+    # produced the test-clone WAVs the user judged best.
+    body = {"text": text, **_load_synth_params()}
 
-    # Zero-shot voice clone: include the reference audio + its transcript.
-    ref_voice = config.FISH_REFERENCE_VOICE
-    if ref_voice and os.path.isfile(ref_voice):
-        try:
-            import base64
-            with open(ref_voice, "rb") as f:
-                ref_b64 = base64.b64encode(f.read()).decode("ascii")
-            body["references"] = [{
-                "audio": ref_b64,
-                "text": config.FISH_REFERENCE_TEXT or "",
-            }]
-        except OSError as e:
-            _log(f"couldn't read reference voice {ref_voice}: {e}")
+    refs = _load_voice_refs()
+    if refs:
+        body["references"] = refs
 
     data = json.dumps(body).encode("utf-8")
     req = urllib.request.Request(

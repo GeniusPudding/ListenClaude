@@ -126,10 +126,15 @@ FISH_MODEL_DIR = os.getenv(
     os.path.expanduser("~/.cache/fish-speech"),
 )
 
-# Optional zero-shot voice clone. Set FISH_REFERENCE_VOICE to a WAV/MP3
-# path (10-30 s, single speaker, clean) and FISH_REFERENCE_TEXT to the
-# transcript of that clip. Empty = use fish-speech's built-in preset
-# voice (no cloning).
+# Voice profile directory. Drop reference WAVs and matching .txt
+# transcripts here (e.g. voices/ig-demo/reference.wav + reference.txt,
+# voices/ig-demo/reference-b.wav + reference-b.txt, ...). Optionally
+# include voices/<name>/config.json to pin synthesis params + which
+# refs to use. Empty = use fish-speech's built-in preset voice.
+FISH_VOICE_DIR = os.getenv("FISH_VOICE_DIR", "")
+
+# Legacy single-reference mode. Still honored if FISH_VOICE_DIR is empty
+# — falls back to a single ref + transcript pair.
 FISH_REFERENCE_VOICE = os.getenv("FISH_REFERENCE_VOICE", "")
 FISH_REFERENCE_TEXT = os.getenv("FISH_REFERENCE_TEXT", "")
 
@@ -138,9 +143,11 @@ FISH_REFERENCE_TEXT = os.getenv("FISH_REFERENCE_TEXT", "")
 # 60 s is conservative for a cold start on a typical laptop GPU.
 FISH_STARTUP_TIMEOUT_SEC = float(os.getenv("FISH_STARTUP_TIMEOUT_SEC", "60"))
 
-# Per-request synthesis timeout (the server has the model loaded; this
-# is just the synth + HTTP round trip, normally <5 s).
-FISH_SYNTH_TIMEOUT_SEC = float(os.getenv("FISH_SYNTH_TIMEOUT_SEC", "30"))
+# Per-request synthesis timeout. Fish-speech 1.5 without torch.compile
+# runs at ~3 tokens/sec on a single 8 GB GPU, so an 800-token summary
+# can legitimately take ~4 minutes. Set this generously to avoid the
+# client tearing down a slow-but-working synth request.
+FISH_SYNTH_TIMEOUT_SEC = float(os.getenv("FISH_SYNTH_TIMEOUT_SEC", "240"))
 
 # After this many seconds of idle, the server frees VRAM and exits.
 # Subsequent requests will pay the cold-start cost again.
