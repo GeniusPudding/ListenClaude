@@ -5,7 +5,17 @@ import tempfile
 
 from dotenv import load_dotenv
 
-load_dotenv()
+# Always resolve .env relative to THIS file (the Listen-Claude repo
+# root), NOT the cwd of whoever invoked us. The Stop hook fires from
+# each Claude Code conversation's own project dir, so plain
+# `load_dotenv()` would only find an .env that happens to live in
+# that project's tree — meaning every other window's hook silently
+# falls back to defaults, regardless of what we wrote to our .env.
+_LISTEN_CLAUDE_ENV = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    ".env",
+)
+load_dotenv(_LISTEN_CLAUDE_ENV)
 
 import sys
 IS_WIN = sys.platform == "win32"
