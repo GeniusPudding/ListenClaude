@@ -11,11 +11,21 @@ from dotenv import load_dotenv
 # `load_dotenv()` would only find an .env that happens to live in
 # that project's tree — meaning every other window's hook silently
 # falls back to defaults, regardless of what we wrote to our .env.
-_LISTEN_CLAUDE_ENV = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    ".env",
-)
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_LISTEN_CLAUDE_ENV = os.path.join(_REPO_ROOT, ".env")
 load_dotenv(_LISTEN_CLAUDE_ENV)
+
+
+def _from_repo_root(p: str) -> str:
+    """Resolve a path from the .env relative to the Listen-Claude repo
+    root, not the cwd of whoever invoked us. Each Claude Code window's
+    Stop hook runs from its OWN project directory, so a relative path
+    like 'voices/ig-demo/reference-c.wav' would otherwise be looked up
+    inside that other project's tree (and fail). Absolute paths and
+    empty strings pass through unchanged."""
+    if not p or os.path.isabs(p):
+        return p
+    return os.path.abspath(os.path.join(_REPO_ROOT, p))
 
 import sys
 IS_WIN = sys.platform == "win32"
@@ -157,11 +167,11 @@ FISH_MODEL_DIR = os.getenv(
 # voices/ig-demo/reference-b.wav + reference-b.txt, ...). Optionally
 # include voices/<name>/config.json to pin synthesis params + which
 # refs to use. Empty = use fish-speech's built-in preset voice.
-FISH_VOICE_DIR = os.getenv("FISH_VOICE_DIR", "")
+FISH_VOICE_DIR = _from_repo_root(os.getenv("FISH_VOICE_DIR", ""))
 
 # Legacy single-reference mode. Still honored if FISH_VOICE_DIR is empty
 # — falls back to a single ref + transcript pair.
-FISH_REFERENCE_VOICE = os.getenv("FISH_REFERENCE_VOICE", "")
+FISH_REFERENCE_VOICE = _from_repo_root(os.getenv("FISH_REFERENCE_VOICE", ""))
 FISH_REFERENCE_TEXT = os.getenv("FISH_REFERENCE_TEXT", "")
 
 # How long to wait for the server's /docs endpoint to come up after we
@@ -197,8 +207,6 @@ FISH_SERVER_CMD = os.getenv("FISH_SERVER_CMD", "")
 # its torch + lightning + funasr deps conflict with the main venv's
 # Py3.13 stack. The api_v2 server is a long-lived subprocess that loads
 # fine-tuned ig-girl checkpoints + holds them in VRAM across requests.
-
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # Loopback bind for the api_v2 server.
 GPTSOVITS_HOST = os.getenv("GPTSOVITS_HOST", "127.0.0.1")
@@ -250,7 +258,7 @@ GPTSOVITS_TTS_INFER_YAML = os.getenv(
 # Reference audio + transcript for per-request voice conditioning.
 # When empty, gptsovits.py falls back to voices/<FISH_VOICE_DIR>/reference.*
 # so a single voice profile drives both gptsovits and fish engines.
-GPTSOVITS_REFERENCE_VOICE = os.getenv("GPTSOVITS_REFERENCE_VOICE", "")
+GPTSOVITS_REFERENCE_VOICE = _from_repo_root(os.getenv("GPTSOVITS_REFERENCE_VOICE", ""))
 GPTSOVITS_REFERENCE_TEXT = os.getenv("GPTSOVITS_REFERENCE_TEXT", "")
 
 # Language tags passed in each /tts request.
