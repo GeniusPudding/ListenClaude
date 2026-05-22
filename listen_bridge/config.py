@@ -21,7 +21,23 @@ IS_LINUX = sys.platform.startswith("linux")
 #                  / English code-switching + voice cloning. Auto-falls
 #                  back to TTS_FALLBACK_ENGINE if CUDA / server / model
 #                  is unavailable — safe to enable on machines without GPU.
+#   "gptsovits"  — local GPT-SoVITS (CUDA + fine-tuned weights). Best
+#                  voice cloning for the trained speaker, but the model
+#                  inherits the speaker's language (poor English if
+#                  trained on Chinese-only).
+#   "auto"       — per-utterance router. Counts ASCII-letter ratio; if
+#                  above TTS_AUTO_ENGLISH_THRESHOLD the utterance goes
+#                  to TTS_AUTO_EN_ENGINE (default edge, reliable English);
+#                  otherwise to TTS_AUTO_ZH_ENGINE (default gptsovits,
+#                  cloned voice). Best of both worlds for mixed daily use.
 TTS_ENGINE = os.getenv("TTS_ENGINE", "system").lower()
+
+# Auto-router knobs. ASCII-letter ratio = (a-zA-Z chars) / (total chars).
+# 0.15 means "if > 15% of the text is English letters, route to the
+# English-strong engine". Tune per personal preference.
+TTS_AUTO_ENGLISH_THRESHOLD = float(os.getenv("TTS_AUTO_ENGLISH_THRESHOLD", "0.15"))
+TTS_AUTO_EN_ENGINE = os.getenv("TTS_AUTO_EN_ENGINE", "edge").lower()
+TTS_AUTO_ZH_ENGINE = os.getenv("TTS_AUTO_ZH_ENGINE", "gptsovits").lower()
 
 # Engine to use when the primary engine fails (e.g. fish-speech with no
 # CUDA / no model / server crash). Never set this to "fish" itself —
@@ -164,6 +180,99 @@ FISH_FORCE_CPU = os.getenv("FISH_FORCE_CPU", "0") == "1"
 # split it via shlex.
 FISH_SERVER_CMD = os.getenv("FISH_SERVER_CMD", "")
 
+# -------------------------------------------------------------------------
+
+# --- GPT-SoVITS (TTS_ENGINE=gptsovits) -----------------------------------
+# GPT-SoVITS runs in its own Py3.10/3.12 venv (.venv-gptsovits/) because
+# its torch + lightning + funasr deps conflict with the main venv's
+# Py3.13 stack. The api_v2 server is a long-lived subprocess that loads
+# fine-tuned ig-girl checkpoints + holds them in VRAM across requests.
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+# Loopback bind for the api_v2 server.
+GPTSOVITS_HOST = os.getenv("GPTSOVITS_HOST", "127.0.0.1")
+GPTSOVITS_PORT = int(os.getenv("GPTSOVITS_PORT", "9880"))
+
+# Python interpreter inside .venv-gptsovits/ that has the GPT-SoVITS deps.
+GPTSOVITS_PYTHON = os.getenv(
+    "GPTSOVITS_PYTHON",
+    os.path.join(_REPO_ROOT, ".venv-gptsovits", "Scripts", "python.exe")
+    if IS_WIN
+    else os.path.join(_REPO_ROOT, ".venv-gptsovits", "bin", "python"),
+)
+
+# Cloned GPT-SoVITS source dir (api_v2.py + GPT_SoVITS/ package + the
+# downloaded base BERT / HuBERT under GPT_SoVITS/pretrained_models/).
+GPTSOVITS_SOURCE_DIR = os.getenv(
+    "GPTSOVITS_SOURCE_DIR",
+    os.path.expanduser("~/.cache/gpt-sovits-source"),
+)
+GPTSOVITS_API_SCRIPT = os.path.join(GPTSOVITS_SOURCE_DIR, "api_v2.py")
+
+# Fine-tuned weights from our `voices/ig-demo/train-gptsovits.py` run.
+_VOICE_TRAIN_DIR = os.path.join(_REPO_ROOT, "voices", "ig-demo", "gptsovits-train")
+GPTSOVITS_GPT_WEIGHTS = os.getenv(
+    "GPTSOVITS_GPT_WEIGHTS",
+    os.path.join(_VOICE_TRAIN_DIR, "GPT_weights", "ig-girl-e15.ckpt"),
+)
+GPTSOVITS_SOVITS_WEIGHTS = os.getenv(
+    "GPTSOVITS_SOVITS_WEIGHTS",
+    # Production uses the v2 BASE SoVITS, not the fine-tuned one. The
+    # fine-tune overfit with only 49 segments and produced garbled audio
+    # at inference; base + 7.9 s reference gives cleaner zero-shot voice
+    # cloning. The fine-tuned SoVITS weights are still on disk for
+    # future re-training experiments.
+    os.path.join(
+        os.path.expanduser("~/.cache/gpt-sovits-source"),
+        "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth",
+    ),
+)
+
+# tts_infer.yaml — one per voice profile (lives next to the weights)
+# pointing api_v2 at our fine-tuned models + the shared BERT/HuBERT/G2P
+# bases in GPT_SoVITS/pretrained_models/.
+GPTSOVITS_TTS_INFER_YAML = os.getenv(
+    "GPTSOVITS_TTS_INFER_YAML",
+    os.path.join(_VOICE_TRAIN_DIR, "tts_infer.yaml"),
+)
+
+# Reference audio + transcript for per-request voice conditioning.
+# When empty, gptsovits.py falls back to voices/<FISH_VOICE_DIR>/reference.*
+# so a single voice profile drives both gptsovits and fish engines.
+GPTSOVITS_REFERENCE_VOICE = os.getenv("GPTSOVITS_REFERENCE_VOICE", "")
+GPTSOVITS_REFERENCE_TEXT = os.getenv("GPTSOVITS_REFERENCE_TEXT", "")
+
+# Language tags passed in each /tts request.
+GPTSOVITS_TEXT_LANG = os.getenv("GPTSOVITS_TEXT_LANG", "zh")
+GPTSOVITS_PROMPT_LANG = os.getenv("GPTSOVITS_PROMPT_LANG", "zh")
+
+# api_v2 cold-start is heavier than fish-speech (BERT + HuBERT + GPT +
+# SoVITS all loaded together).
+GPTSOVITS_STARTUP_TIMEOUT_SEC = float(os.getenv("GPTSOVITS_STARTUP_TIMEOUT_SEC", "120"))
+GPTSOVITS_SYNTH_TIMEOUT_SEC = float(os.getenv("GPTSOVITS_SYNTH_TIMEOUT_SEC", "180"))
+
+# Synthesis sampling knobs (all overridable via env). The defaults are
+# what produced the most natural output during voice cloning trials
+# on the ig-girl voice — start here and tweak per voice profile.
+GPTSOVITS_TOP_K = int(os.getenv("GPTSOVITS_TOP_K", "15"))
+GPTSOVITS_TOP_P = float(os.getenv("GPTSOVITS_TOP_P", "0.7"))
+GPTSOVITS_TEMPERATURE = float(os.getenv("GPTSOVITS_TEMPERATURE", "0.7"))
+GPTSOVITS_REPETITION_PENALTY = float(os.getenv("GPTSOVITS_REPETITION_PENALTY", "1.35"))
+# Speed factor: 1.0 = original pace of the reference, <1.0 = slower,
+# >1.0 = faster. Fine-tune on small data tends to read too fast; 0.85
+# is a good starting point for clarity.
+GPTSOVITS_SPEED_FACTOR = float(os.getenv("GPTSOVITS_SPEED_FACTOR", "0.85"))
+# Text split method: cut0 = whole text in one shot (smoothest),
+# cut1 = every ~4 sentences, cut2 = every ~50 chars, cut3 = on CJK
+# punctuation, cut4 = on ASCII, cut5 = on both. For short summaries
+# cut0 reads the most natural.
+GPTSOVITS_TEXT_SPLIT = os.getenv("GPTSOVITS_TEXT_SPLIT", "cut0")
+# Pause inserted between fragments when text_split is not cut0.
+GPTSOVITS_FRAGMENT_INTERVAL = float(os.getenv("GPTSOVITS_FRAGMENT_INTERVAL", "0.3"))
+
+# Advanced: full override of the server launch command.
+GPTSOVITS_SERVER_CMD = os.getenv("GPTSOVITS_SERVER_CMD", "")
 # -------------------------------------------------------------------------
 
 LOG_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.log")

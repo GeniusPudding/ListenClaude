@@ -26,6 +26,12 @@ case "$action" in
     brief|short)    action="first" ;;
     detailed|long)  action="full"  ;;
     smart)          action="llm"   ;;
+    # Engine quick-switch aliases. `auto` = hybrid router (Chinese →
+    # cloned voice via gptsovits, English-heavy → edge). `default`/
+    # `xiaoxiao` snap back to the always-clear Edge voice.
+    default|xiaoxiao)        action="edge" ;;
+    cloned|hybrid)           action="auto" ;;
+    ex|experimental|ig)      action="gptsovits" ;;
 esac
 
 set_mode() {
@@ -54,12 +60,44 @@ get_mode() {
     echo "progress (default)"
 }
 
+set_engine() {
+    local engine="$1"
+    if [[ ! -f "$env_file" && -f "$repo_dir/.env.example" ]]; then
+        cp "$repo_dir/.env.example" "$env_file"
+    fi
+    if [[ -f "$env_file" ]]; then
+        local tmp; tmp="$(mktemp)"
+        grep -v '^[[:space:]]*TTS_ENGINE[[:space:]]*=' "$env_file" > "$tmp" || true
+        printf 'TTS_ENGINE=%s\n' "$engine" >> "$tmp"
+        mv "$tmp" "$env_file"
+    fi
+    echo "Listen-Claude engine: $engine"
+}
+
+get_engine() {
+    if [[ -f "$env_file" ]]; then
+        local line
+        line="$(grep -E '^[[:space:]]*TTS_ENGINE[[:space:]]*=' "$env_file" | tail -n1)"
+        if [[ -n "$line" ]]; then
+            echo "${line#*=}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//'
+            return
+        fi
+    fi
+    echo "edge (default)"
+}
+
 case "$action" in
     first|progress|summary|full|llm)
         set_mode "$action"; exit 0
         ;;
     mode)
         echo "Listen-Claude mode: $(get_mode)"; exit 0
+        ;;
+    edge|system|piper|elevenlabs|fish|gptsovits|auto)
+        set_engine "$action"; exit 0
+        ;;
+    engine)
+        echo "Listen-Claude engine: $(get_engine)"; exit 0
         ;;
 esac
 

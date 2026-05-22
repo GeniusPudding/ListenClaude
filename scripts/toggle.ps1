@@ -27,9 +27,23 @@ $aliases = @{
     'smart'    = 'llm'
 }
 $validModes = @('first', 'progress', 'summary', 'full', 'llm')
+# Engine quick-switch aliases. `auto` = hybrid router (Chinese →
+# cloned voice via gptsovits, English-heavy → edge). `edge` /
+# `default` / `xiaoxiao` snap back to the always-clear Edge voice.
+$engineAliases = @{
+    'default'      = 'edge'
+    'xiaoxiao'     = 'edge'
+    'cloned'       = 'auto'
+    'hybrid'       = 'auto'
+    'ex'           = 'gptsovits'
+    'experimental' = 'gptsovits'
+    'ig'           = 'gptsovits'
+}
+$validEngines = @('edge', 'system', 'piper', 'elevenlabs', 'fish', 'gptsovits', 'auto')
 
 $action = $Action.ToLower()
 if ($aliases.ContainsKey($action)) { $action = $aliases[$action] }
+if ($engineAliases.ContainsKey($action)) { $action = $engineAliases[$action] }
 
 function Set-Mode($mode) {
     if (-not (Test-Path $envFile)) {
@@ -40,6 +54,26 @@ function Set-Mode($mode) {
         $kept + "TTS_MODE=$mode" | Set-Content -Path $envFile -Encoding UTF8
     }
     Write-Host "Listen-Claude mode: $mode"
+}
+
+function Set-Engine($engine) {
+    if (-not (Test-Path $envFile)) {
+        Copy-Item (Join-Path $repoDir '.env.example') $envFile -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $envFile) {
+        $kept = @(Get-Content $envFile) | Where-Object { $_ -notmatch '^\s*TTS_ENGINE\s*=' }
+        $kept + "TTS_ENGINE=$engine" | Set-Content -Path $envFile -Encoding UTF8
+    }
+    Write-Host "Listen-Claude engine: $engine"
+}
+
+function Get-Engine {
+    if (Test-Path $envFile) {
+        foreach ($line in Get-Content $envFile) {
+            if ($line -match '^\s*TTS_ENGINE\s*=\s*(.+?)\s*$') { return $matches[1] }
+        }
+    }
+    return 'edge (default)'
 }
 
 function Get-Mode {
@@ -54,6 +88,10 @@ function Get-Mode {
 # Mode setters.
 if ($validModes -contains $action) { Set-Mode $action; exit 0 }
 if ($action -eq 'mode')             { Write-Host "Listen-Claude mode: $(Get-Mode)"; exit 0 }
+
+# Engine setters / inspector.
+if ($validEngines -contains $action) { Set-Engine $action; exit 0 }
+if ($action -eq 'engine')            { Write-Host "Listen-Claude engine: $(Get-Engine)"; exit 0 }
 
 # on/off/status/toggle.
 $exists = Test-Path $marker

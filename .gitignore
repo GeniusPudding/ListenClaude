@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-gptsovits/
 venv/
 .DS_Store
 .vscode/
