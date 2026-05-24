@@ -12,7 +12,7 @@
 #   .\scripts\toggle.ps1 detailed         read everything (TTS_MODE=full)
 #   .\scripts\toggle.ps1 mode             print current mode
 
-param([string]$Action = 'toggle')
+param([string]$Action = 'toggle', [string]$Param = '')
 
 $repoDir = Split-Path -Parent $PSScriptRoot
 $marker  = Join-Path $env:TEMP 'listen-claude.disabled'
@@ -92,6 +92,38 @@ if ($action -eq 'mode')             { Write-Host "Listen-Claude mode: $(Get-Mode
 # Engine setters / inspector.
 if ($validEngines -contains $action) { Set-Engine $action; exit 0 }
 if ($action -eq 'engine')            { Write-Host "Listen-Claude engine: $(Get-Engine)"; exit 0 }
+
+# Voice profile selector: /listen voice <name>
+if ($action -eq 'voice') {
+    if (-not $Param) {
+        # No name → list profiles
+        $voicesDir = Join-Path $repoDir 'voices'
+        if (Test-Path $voicesDir) {
+            $found = @()
+            Get-ChildItem $voicesDir -Directory -ErrorAction SilentlyContinue |
+                Where-Object { Test-Path (Join-Path $_.FullName 'profile.json') } |
+                ForEach-Object { $found += $_.Name }
+            if ($found.Count -gt 0) {
+                Write-Host "Listen-Claude voices: $($found -join ', ')"
+            } else {
+                Write-Host "Listen-Claude voices: (none — run clone-voice to create one)"
+            }
+        }
+        exit 0
+    }
+    # Set GPTSOVITS_VOICE_PROFILE in .env + force engine = gptsovits.
+    if (-not (Test-Path $envFile)) {
+        Copy-Item (Join-Path $repoDir '.env.example') $envFile -ErrorAction SilentlyContinue
+    }
+    if (Test-Path $envFile) {
+        $kept = @(Get-Content $envFile) |
+                Where-Object { $_ -notmatch '^\s*(TTS_ENGINE|GPTSOVITS_VOICE_PROFILE)\s*=' }
+        $kept + "TTS_ENGINE=gptsovits", "GPTSOVITS_VOICE_PROFILE=$Param" |
+            Set-Content -Path $envFile -Encoding UTF8
+    }
+    Write-Host "Listen-Claude voice: $Param (engine=gptsovits)"
+    exit 0
+}
 
 # on/off/status/toggle.
 $exists = Test-Path $marker

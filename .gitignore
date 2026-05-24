@@ -12,8 +12,13 @@ venv/
 # Claude Code per-user permissions; project-shared settings.json may still be tracked.
 .claude/settings.local.json
 
-# User-supplied reference audio for fish-speech voice cloning.
-voices/
+# User-supplied reference audio + trained voice profiles. Individual
+# profile data (audio, transcripts, weights) stays private to each
+# user's machine. Only the README explaining the layout is tracked
+# — gitignore can't re-include files under an ignored directory, so we
+# ignore the *contents* of voices/ instead of the directory itself.
+voices/*
+!voices/README.md
 
 # Downloaded fish-speech model checkpoints (~2 GB) — too big for git.
 models/

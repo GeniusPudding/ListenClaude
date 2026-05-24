@@ -19,6 +19,7 @@ repo_dir="$(cd "$(dirname "$0")/.." && pwd)"
 marker="${TMPDIR:-/tmp}/listen-claude.disabled"
 env_file="$repo_dir/.env"
 action="${1:-toggle}"
+param="${2:-}"
 action="$(echo "$action" | tr '[:upper:]' '[:lower:]')"
 
 # Aliases that map user-friendly words to TTS_MODE values.
@@ -98,6 +99,35 @@ case "$action" in
         ;;
     engine)
         echo "Listen-Claude engine: $(get_engine)"; exit 0
+        ;;
+    voice)
+        if [[ -z "$param" ]]; then
+            voices_dir="$repo_dir/voices"
+            found=()
+            if [[ -d "$voices_dir" ]]; then
+                for d in "$voices_dir"/*/; do
+                    [[ -f "$d/profile.json" ]] && found+=("$(basename "$d")")
+                done
+            fi
+            if (( ${#found[@]} > 0 )); then
+                echo "Listen-Claude voices: ${found[*]}"
+            else
+                echo "Listen-Claude voices: (none — run clone-voice to create one)"
+            fi
+            exit 0
+        fi
+        if [[ ! -f "$env_file" && -f "$repo_dir/.env.example" ]]; then
+            cp "$repo_dir/.env.example" "$env_file"
+        fi
+        if [[ -f "$env_file" ]]; then
+            tmp="$(mktemp)"
+            grep -vE '^[[:space:]]*(TTS_ENGINE|GPTSOVITS_VOICE_PROFILE)[[:space:]]*=' \
+                "$env_file" > "$tmp" || true
+            printf 'TTS_ENGINE=gptsovits\nGPTSOVITS_VOICE_PROFILE=%s\n' "$param" >> "$tmp"
+            mv "$tmp" "$env_file"
+        fi
+        echo "Listen-Claude voice: $param (engine=gptsovits)"
+        exit 0
         ;;
 esac
 

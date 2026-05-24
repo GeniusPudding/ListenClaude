@@ -255,6 +255,12 @@ GPTSOVITS_TTS_INFER_YAML = os.getenv(
     os.path.join(_VOICE_TRAIN_DIR, "tts_infer.yaml"),
 )
 
+# Voice profile name (looks up voices/<name>/profile.json). When set,
+# the profile's `engines.gptsovits` block overrides the GPTSOVITS_*
+# fields below — that's how `scripts/clone-voice activate <name>`
+# switches the active cloned voice without touching code.
+GPTSOVITS_VOICE_PROFILE = os.getenv("GPTSOVITS_VOICE_PROFILE", "")
+
 # Reference audio + transcript for per-request voice conditioning.
 # When empty, gptsovits.py falls back to voices/<FISH_VOICE_DIR>/reference.*
 # so a single voice profile drives both gptsovits and fish engines.

@@ -27,6 +27,54 @@ import urllib.request
 from .. import config
 
 
+def _active_profile():
+    """Return the voices/<name>/profile.json view if GPTSOVITS_VOICE_PROFILE
+    is set, else None. Lazy import — only relevant when profiles are in use."""
+    if not config.GPTSOVITS_VOICE_PROFILE:
+        return None
+    try:
+        from ..voice_clone import profile as profile_mod
+        return profile_mod.load(config.GPTSOVITS_VOICE_PROFILE)
+    except Exception as e:
+        _log_str = f"profile load failed ({e}); falling back to env vars"
+        try:
+            with open(config.LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(f"[{time.strftime('%H:%M:%S')}] gptsovits: {_log_str}\n")
+        except Exception:
+            pass
+        return None
+
+
+def _profile_engine() -> dict:
+    """gptsovits-specific config from the active profile, or empty dict."""
+    prof = _active_profile()
+    if not prof:
+        return {}
+    return prof.engine("gptsovits") or {}
+
+
+def _profile_ref_paths() -> tuple[str, str]:
+    """(ref_audio_abs, ref_text_str) from the active profile, ('', '')
+    if no profile or fields absent."""
+    prof = _active_profile()
+    if not prof:
+        return "", ""
+    eng = prof.engine("gptsovits")
+    audio_rel = eng.get("reference", "")
+    text_rel = eng.get("reference_text", "")
+    audio_abs = prof.resolve(audio_rel) if audio_rel else ""
+    text_str = ""
+    if text_rel:
+        text_path = prof.resolve(text_rel)
+        if os.path.isfile(text_path):
+            try:
+                with open(text_path, encoding="utf-8") as f:
+                    text_str = f.read().strip()
+            except OSError:
+                pass
+    return audio_abs, text_str
+
+
 # ---------------------------------------------------------------------------
 # Logging — same format / file as fish.py / runner.py
 
@@ -59,12 +107,19 @@ def _check_cuda() -> tuple[bool, str]:
 
 
 def _check_models() -> tuple[bool, str]:
-    """Verify the trained GPT + SoVITS .pth/.ckpt files exist."""
+    """Verify the trained GPT + SoVITS .pth/.ckpt files exist. Active
+    profile (if any) overrides the env-default GPT path."""
+    prof = _active_profile()
+    if prof:
+        gpt_ckpt = prof.resolve(prof.engine("gptsovits").get("gpt_ckpt", "")) \
+                   or config.GPTSOVITS_GPT_WEIGHTS
+    else:
+        gpt_ckpt = config.GPTSOVITS_GPT_WEIGHTS
     for label, path in (
-        ("GPT ckpt",    config.GPTSOVITS_GPT_WEIGHTS),
+        ("GPT ckpt",    gpt_ckpt),
         ("SoVITS pth",  config.GPTSOVITS_SOVITS_WEIGHTS),
     ):
-        if not os.path.isfile(path):
+        if not path or not os.path.isfile(path):
             return False, f"missing {label} at {path}"
     return True, "models ok"
 
@@ -128,12 +183,20 @@ def _build_server_cmd() -> list[str]:
     if config.GPTSOVITS_SERVER_CMD:
         return shlex.split(config.GPTSOVITS_SERVER_CMD, posix=not config.IS_WIN)
 
+    # Profile may pin a per-voice tts_infer.yaml; otherwise use the
+    # global default from .env / config.py.
+    yaml_path = config.GPTSOVITS_TTS_INFER_YAML
+    prof = _active_profile()
+    if prof:
+        eng = prof.engine("gptsovits")
+        if eng.get("tts_infer_yaml"):
+            yaml_path = prof.resolve(eng["tts_infer_yaml"])
     return [
         config.GPTSOVITS_PYTHON,
         config.GPTSOVITS_API_SCRIPT,
         "-a", config.GPTSOVITS_HOST,
         "-p", str(config.GPTSOVITS_PORT),
-        "-c", config.GPTSOVITS_TTS_INFER_YAML,
+        "-c", yaml_path,
     ]
 
 
@@ -217,8 +280,13 @@ def _request_synthesis(text: str) -> bytes | None:
     audio + transcript from the same voice profile dir as fish.py uses,
     so a single voices/<name>/ folder works with either engine.
     """
-    ref_path = config.GPTSOVITS_REFERENCE_VOICE
-    ref_text = config.GPTSOVITS_REFERENCE_TEXT
+    # Resolution order for ref + synth params:
+    #   1. active profile (voices/<GPTSOVITS_VOICE_PROFILE>/profile.json)
+    #   2. GPTSOVITS_REFERENCE_VOICE / TEXT env vars
+    #   3. FISH_VOICE_DIR/reference.{wav,txt} (single-voice convenience)
+    p_audio, p_text = _profile_ref_paths()
+    ref_path = p_audio or config.GPTSOVITS_REFERENCE_VOICE
+    ref_text = p_text or config.GPTSOVITS_REFERENCE_TEXT
 
     # Fall back to FISH_VOICE_DIR's first reference if no dedicated ref
     # was set — keeps single-voice setups DRY.
@@ -247,22 +315,24 @@ def _request_synthesis(text: str) -> bytes | None:
         _log(f"reference voice file not found: {ref_path}")
         return None
 
-    # All sampling / speed knobs are env-driven via config so they can
-    # be tuned per-voice without code edits.
+    # Synthesis params: profile.engine.synthesis (if any) overrides
+    # the env defaults. Lets a voice profile pin a known-good preset
+    # without forcing other voices to share it.
+    synth = dict(_profile_engine().get("synthesis") or {})
     body = {
         "text": text,
         "text_lang": config.GPTSOVITS_TEXT_LANG,
         "ref_audio_path": ref_path,
         "prompt_text": ref_text or "",
         "prompt_lang": config.GPTSOVITS_PROMPT_LANG,
-        "top_k": config.GPTSOVITS_TOP_K,
-        "top_p": config.GPTSOVITS_TOP_P,
-        "temperature": config.GPTSOVITS_TEMPERATURE,
-        "text_split_method": config.GPTSOVITS_TEXT_SPLIT,
+        "top_k": synth.get("top_k", config.GPTSOVITS_TOP_K),
+        "top_p": synth.get("top_p", config.GPTSOVITS_TOP_P),
+        "temperature": synth.get("temperature", config.GPTSOVITS_TEMPERATURE),
+        "text_split_method": synth.get("text_split_method", config.GPTSOVITS_TEXT_SPLIT),
         "batch_size": 1,
-        "speed_factor": config.GPTSOVITS_SPEED_FACTOR,
-        "fragment_interval": config.GPTSOVITS_FRAGMENT_INTERVAL,
-        "repetition_penalty": config.GPTSOVITS_REPETITION_PENALTY,
+        "speed_factor": synth.get("speed_factor", config.GPTSOVITS_SPEED_FACTOR),
+        "fragment_interval": synth.get("fragment_interval", config.GPTSOVITS_FRAGMENT_INTERVAL),
+        "repetition_penalty": synth.get("repetition_penalty", config.GPTSOVITS_REPETITION_PENALTY),
         "media_type": "wav",
         "streaming_mode": False,
     }
