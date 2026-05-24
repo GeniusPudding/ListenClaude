@@ -104,6 +104,43 @@ TTS_ENABLED = os.getenv("TTS_ENABLED", "1") == "1"
 # multiple Claude sessions are open. Set to 0 to disable.
 ANNOUNCE_PROJECT = os.getenv("ANNOUNCE_PROJECT", "1") == "1"
 
+# Template for how the project announcement is joined to the body.
+# Available placeholders: {project} and {text}. Defaults to a plain
+# `"<project>: <text>"`. Cloned-voice engines (gptsovits) often elide
+# English-only project names because the fine-tune was Chinese-only —
+# setting this to e.g. "視窗 {project}:{text}" prepends a reliably
+# pronounceable Chinese token (視窗 = "window") that wakes the model
+# up before the English name is attempted. Pair with PROJECT_ALIASES
+# (below) to transliterate the names themselves.
+ANNOUNCE_FORMAT = os.getenv("ANNOUNCE_FORMAT", "{project}: {text}")
+
+# Per-project Chinese aliases. JSON file mapping
+#   {"Listen-Claude": "聽小爪", "MandpopDataset": "華語資料集"}
+# Used at announcement time: an aliased name is substituted for the raw
+# cwd basename before {project} is rendered into ANNOUNCE_FORMAT, so
+# cloned voices that can only pronounce Chinese reliably can still call
+# out which window is speaking. Missing file = no substitutions. The
+# file lives under voices/ by default (alongside profiles) but the path
+# is configurable.
+PROJECT_ALIASES_FILE = _from_repo_root(
+    os.getenv("PROJECT_ALIASES_FILE", os.path.join("voices", "project-aliases.json"))
+)
+
+
+def project_alias(name: str) -> str:
+    """Return the Chinese alias registered in PROJECT_ALIASES_FILE for
+    this project name, falling back to the original name when there's
+    no entry (or the file is missing / malformed)."""
+    if not name:
+        return name
+    try:
+        import json as _json
+        with open(PROJECT_ALIASES_FILE, encoding="utf-8") as f:
+            aliases = _json.load(f)
+        return str(aliases.get(name, name))
+    except (OSError, ValueError):
+        return name
+
 # Worker lock — held by whichever process is currently draining the
 # spoken queue. Other hooks enqueue their item and either become the
 # worker themselves (if the lock is free) or wait for the current worker

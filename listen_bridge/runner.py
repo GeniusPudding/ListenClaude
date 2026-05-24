@@ -234,11 +234,18 @@ def main() -> int:
         return 0
 
     # Resolve the spoken text in the producer so multiple windows summarize
-    # in parallel; the worker just plays audio sequentially.
+    # in parallel; the worker just plays audio sequentially. Project name
+    # passes through PROJECT_ALIASES (a user-maintained JSON) so cloned
+    # voices that only speak the trained language can still pronounce
+    # which window is talking.
     project = _project_name(payload) if config.ANNOUNCE_PROJECT else ""
     spoken = summarize.prepare_text(text, config.TTS_MODE, config.TTS_MAX_CHARS)
     if project:
-        spoken = f"{project}: {spoken}"
+        announced = config.project_alias(project)
+        try:
+            spoken = config.ANNOUNCE_FORMAT.format(project=announced, text=spoken)
+        except (KeyError, IndexError, ValueError):
+            spoken = f"{announced}: {spoken}"
 
     qfile = _enqueue(spoken, project)
     _log(f"enqueued {os.path.basename(qfile)}: {spoken[:60]}")

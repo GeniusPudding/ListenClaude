@@ -1,0 +1,15 @@
+{
+  "_comment_1": "Maps Claude Code project directory names → spoken Chinese aliases.",
+  "_comment_2": "Cloned voices trained on Chinese-only audio silently elide English",
+  "_comment_3": "project names; register an alias here to make your window",
+  "_comment_4": "announcements identifiable. Copy this file to project-aliases.json",
+  "_comment_5": "(same dir) and edit. Underscore-prefixed keys are ignored at lookup.",
+
+  "Listen-Claude": "聽小爪",
+  "claude-voice-zh": "中文語音",
+  "MandpopDataset": "華語資料集",
+  "SADroid": "薩機器人",
+  "ApkSmith": "安卓鐵匠",
+  "puddings-world": "布丁世界",
+  "SurgeryOCR": "手術辨識"
+}

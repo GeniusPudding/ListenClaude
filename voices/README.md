@@ -92,6 +92,44 @@ Equivalent shell:
     --out voices\_test\my-voice-A.wav
 ```
 
+## Multi-window announcements
+
+When several Claude Code sessions are open at once, the Stop hook
+prefixes each spoken response with the project directory name so you
+know which window is talking (`ANNOUNCE_PROJECT=1`, default on). Two
+knobs in `.env` shape how that prefix sounds:
+
+- **`ANNOUNCE_FORMAT`** — Python format string with `{project}` and
+  `{text}` placeholders. Default `"{project}: {text}"`. Cloned voices
+  trained on Chinese-only audio (e.g. ig-demo) silently elide English
+  project names, so for those voices set:
+
+  ```
+  ANNOUNCE_FORMAT=視窗 {project}:{text}
+  ```
+
+  Prepending the Chinese word `視窗` (window) gives the model a
+  reliably pronounceable token to start on, so the announcement
+  doesn't just disappear.
+
+- **`PROJECT_ALIASES_FILE`** — JSON file mapping English project names
+  to Chinese aliases. Default `voices/project-aliases.json`. Copy
+  `project-aliases.example.json` as a starting point and fill in the
+  projects you care about:
+
+  ```json
+  {
+    "Listen-Claude": "聽小爪",
+    "MandpopDataset": "華語資料集"
+  }
+  ```
+
+  Projects without an entry pass through unchanged (English name will
+  sound garbled in gptsovits but clear in edge / system / piper).
+
+  The file is gitignored — your alias list is private. The committed
+  `project-aliases.example.json` only documents the format.
+
 ## Notes & limits
 
 - **Reference must be 3-10 seconds.** api_v2 rejects shorter / longer

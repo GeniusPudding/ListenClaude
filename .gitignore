@@ -19,6 +19,7 @@ venv/
 # ignore the *contents* of voices/ instead of the directory itself.
 voices/*
 !voices/README.md
+!voices/project-aliases.example.json
 
 # Downloaded fish-speech model checkpoints (~2 GB) — too big for git.
 models/
