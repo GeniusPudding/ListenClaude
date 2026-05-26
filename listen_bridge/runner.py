@@ -207,6 +207,73 @@ def _run_worker() -> None:
         beat.join(timeout=1.0)
 
 
+def _drain_until_done(qfile: str) -> None:
+    """Either become the worker and drain the queue, or spin until our
+    own item has been picked up by whoever already holds the lock."""
+    while True:
+        if not config.is_enabled():
+            try:
+                os.unlink(qfile)
+            except OSError:
+                pass
+            return
+
+        if _try_claim_lock():
+            try:
+                _run_worker()
+            finally:
+                _release_lock()
+            return
+
+        if not os.path.exists(qfile):
+            return
+
+        _clear_stale_lock()
+        time.sleep(0.3)
+
+
+def _format_announcement(announced: str, body: str) -> str:
+    """Apply ANNOUNCE_FORMAT to a {project, text} pair with a defensive
+    fallback for malformed templates."""
+    try:
+        return config.ANNOUNCE_FORMAT.format(project=announced, text=body)
+    except (KeyError, IndexError, ValueError):
+        return f"{announced}: {body}"
+
+
+def _safe_state_filename(name: str) -> str:
+    """Sanitize a project name for use as a flat filename in the notify
+    state dir. Keeps alphanumerics (incl. CJK), replaces everything else
+    with '_'. Capped at 120 chars so Windows path limits stay safe."""
+    out = "".join(ch if ch.isalnum() else "_" for ch in name)
+    return (out or "_")[:120]
+
+
+def _notify_recently_spoke(project: str) -> bool:
+    """True iff we already spoke a notification for this project within
+    the last NOTIFY_DEDUPE_SEC seconds."""
+    if not project or config.NOTIFY_DEDUPE_SEC <= 0:
+        return False
+    path = os.path.join(config.NOTIFY_STATE_DIR, _safe_state_filename(project))
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return False
+    return age < config.NOTIFY_DEDUPE_SEC
+
+
+def _notify_mark_spoke(project: str) -> None:
+    try:
+        os.makedirs(config.NOTIFY_STATE_DIR, exist_ok=True)
+        path = os.path.join(
+            config.NOTIFY_STATE_DIR, _safe_state_filename(project or "_")
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("")
+    except OSError:
+        pass
+
+
 def main() -> int:
     if not config.is_enabled():
         return 0
@@ -241,42 +308,58 @@ def main() -> int:
     project = _project_name(payload) if config.ANNOUNCE_PROJECT else ""
     spoken = summarize.prepare_text(text, config.TTS_MODE, config.TTS_MAX_CHARS)
     if project:
-        announced = config.project_alias(project)
-        try:
-            spoken = config.ANNOUNCE_FORMAT.format(project=announced, text=spoken)
-        except (KeyError, IndexError, ValueError):
-            spoken = f"{announced}: {spoken}"
+        spoken = _format_announcement(config.project_alias(project), spoken)
 
     qfile = _enqueue(spoken, project)
     _log(f"enqueued {os.path.basename(qfile)}: {spoken[:60]}")
+    _drain_until_done(qfile)
+    return 0
 
-    # Try to become the worker. If someone else already is, sit in a
-    # short loop until either (a) our file gets processed by them, or
-    # (b) the lock goes stale and we can take over. No timeout —
-    # dropping a message is worse than waiting.
-    while True:
-        if not config.is_enabled():
-            # User disabled TTS while we waited. Withdraw our queued file
-            # so the next worker doesn't speak it later.
-            try:
-                os.unlink(qfile)
-            except OSError:
-                pass
-            return 0
 
-        if _try_claim_lock():
-            try:
-                _run_worker()
-            finally:
-                _release_lock()
-            return 0
+def notification_main() -> int:
+    """Entry point for Claude Code's Notification hook.
 
-        # Someone else is the worker — has our file already been picked up?
-        if not os.path.exists(qfile):
-            return 0
+    Speaks a short prompt — by default 「視窗 <project>:需要確認」— when
+    Claude Code asks the user a Yes/No permission question. Reuses the
+    same FIFO queue as the Stop hook so messages from multiple windows
+    still play in order without overlap.
 
-        _clear_stale_lock()
-        time.sleep(0.3)
+    Filters by NOTIFY_KEYWORDS so idle / non-permission notifications
+    don't pester the user, and dedupes within NOTIFY_DEDUPE_SEC per
+    project so rapidly-repeated prompts only speak once.
+    """
+    if not config.is_enabled():
+        return 0
+
+    raw = sys.stdin.read()
+    try:
+        payload = json.loads(raw, strict=False)
+    except Exception as e:
+        _log(f"notify: failed to parse hook stdin: {e}")
+        return 0
+
+    message = str(payload.get("message") or "")
+    low = message.lower()
+    if config.NOTIFY_KEYWORDS and not any(k in low for k in config.NOTIFY_KEYWORDS):
+        _log(f"notify skip (no keyword): {message[:60]}")
+        return 0
+
+    project = _project_name(payload) if config.ANNOUNCE_PROJECT else ""
+    if _notify_recently_spoke(project):
+        _log(f"notify dedupe ({project}): {message[:60]}")
+        return 0
+
+    body = config.NOTIFY_BODY
+    if project:
+        spoken = _format_announcement(config.project_alias(project), body)
+    else:
+        spoken = body
+
+    _notify_mark_spoke(project)
+    qfile = _enqueue(spoken, project)
+    _log(f"notify enqueued {os.path.basename(qfile)}: {spoken[:60]}")
+    _drain_until_done(qfile)
+    return 0
 
 
 if __name__ == "__main__":

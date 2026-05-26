@@ -92,6 +92,48 @@ Equivalent shell:
     --out voices\_test\my-voice-A.wav
 ```
 
+## Yes/No permission notifications
+
+Claude Code's `Notification` hook fires whenever the agent needs the
+user's attention — including tool-permission prompts (`Allow Bash?`)
+and idle reminders. Listen-Claude picks those up too, so when several
+windows are open and one of them is suddenly asking for permission,
+you hear something like 「視窗 薩機器人:需要確認」rather than just
+seeing a silent prompt scroll past.
+
+Behaviour:
+
+- Only messages containing `permission` or `needs your` are spoken
+  (idle prompts are filtered, `NOTIFY_KEYWORDS` overrides).
+- A per-project 10-second dedupe (`NOTIFY_DEDUPE_SEC`) suppresses
+  repeats when Claude Code re-prompts back-to-back.
+- The spoken body defaults to 「需要確認」 (`NOTIFY_BODY`) and goes
+  through the same `ANNOUNCE_FORMAT` + `PROJECT_ALIASES` as Stop-hook
+  announcements, so the project naming stays consistent.
+- The same FIFO queue is shared with the Stop hook, so notifications
+  never overlap with a currently-playing response summary.
+
+Registration lives in `~/.claude/settings.json`:
+
+```json
+"Notification": [
+  {
+    "hooks": [
+      {
+        "type": "command",
+        "command": "\"C:/.../.venv/Scripts/python.exe\" \"C:/.../scripts/notification_hook_entry.py\"",
+        "timeout": 60
+      }
+    ]
+  }
+]
+```
+
+Note: Claude Code only fires the Notification hook when the agent is
+actually *blocked* on a prompt. If your `permissionMode` is set to
+`acceptEdits` or `bypassPermissions`, most tools auto-approve and no
+notification fires — switch to `default` or `plan` to hear them.
+
 ## Multi-window announcements
 
 When several Claude Code sessions are open at once, the Stop hook

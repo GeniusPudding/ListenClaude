@@ -336,4 +336,37 @@ GPTSOVITS_FRAGMENT_INTERVAL = float(os.getenv("GPTSOVITS_FRAGMENT_INTERVAL", "0.
 GPTSOVITS_SERVER_CMD = os.getenv("GPTSOVITS_SERVER_CMD", "")
 # -------------------------------------------------------------------------
 
+# --- Notification hook (Yes/No permission prompts) ----------------------
+# Claude Code's Notification hook fires when something needs the user's
+# attention — most usefully on tool-permission Yes/No prompts. When a
+# notification comes in, the runner enqueues a short spoken prompt
+# (default 「視窗 <project>:需要確認」) into the same FIFO the Stop hook
+# uses, so multiple windows still play in order.
+
+# Only notifications whose `message` field contains any of these
+# substrings (case-insensitive) are spoken. Idle notifications etc.
+# are filtered out so the speaker doesn't shout at you when you walk
+# away from the desk.
+NOTIFY_KEYWORDS = tuple(
+    s.strip().lower()
+    for s in os.getenv("NOTIFY_KEYWORDS", "permission,needs your").split(",")
+    if s.strip()
+)
+
+# Short body spoken when a permission notification fires. Combined with
+# ANNOUNCE_FORMAT to produce e.g. 「視窗 聽小爪:需要確認」.
+NOTIFY_BODY = os.getenv("NOTIFY_BODY", "需要確認")
+
+# Per-project dedupe window. If the same project triggers another
+# notification within this many seconds of the previous spoken one, we
+# skip it — covers the case where you click 'n' a few times in quick
+# succession and Claude Code re-prompts.
+NOTIFY_DEDUPE_SEC = float(os.getenv("NOTIFY_DEDUPE_SEC", "10"))
+
+# Where the per-project "last spoken" timestamps live (just empty files
+# whose mtime is what we check). Lives next to the queue dir so it
+# shares the same cleanup story.
+NOTIFY_STATE_DIR = os.path.join(tempfile.gettempdir(), "listen-claude-notify")
+# -------------------------------------------------------------------------
+
 LOG_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.log")
