@@ -100,6 +100,39 @@ case "$action" in
     engine)
         echo "Listen-Claude engine: $(get_engine)"; exit 0
         ;;
+    notify)
+        # Per-project notify silencer — see toggle.ps1 'notify' block
+        # for rationale. Default to current dir basename.
+        sub="${param:-status}"
+        sub="$(echo "$sub" | tr '[:upper:]' '[:lower:]')"
+        disabled_dir="${TMPDIR:-/tmp}/listen-claude-notify-disabled"
+        proj="$(basename "$(pwd)")"
+        safe="$(echo "$proj" | tr -c 'A-Za-z0-9_' '_')"
+        flag="$disabled_dir/$safe.flag"
+        case "$sub" in
+            off)
+                mkdir -p "$disabled_dir"; : > "$flag"
+                echo "Listen-Claude notify: OFF for $proj"
+                ;;
+            on)
+                rm -f "$flag"
+                echo "Listen-Claude notify: ON for $proj"
+                ;;
+            toggle)
+                if [[ -f "$flag" ]]; then
+                    rm -f "$flag"; echo "Listen-Claude notify: ON for $proj"
+                else
+                    mkdir -p "$disabled_dir"; : > "$flag"
+                    echo "Listen-Claude notify: OFF for $proj"
+                fi
+                ;;
+            *)
+                state=$([[ -f "$flag" ]] && echo OFF || echo ON)
+                echo "Listen-Claude notify: $state for $proj"
+                ;;
+        esac
+        exit 0
+        ;;
     voice)
         if [[ -z "$param" ]]; then
             voices_dir="$repo_dir/voices"

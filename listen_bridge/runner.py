@@ -27,7 +27,7 @@ import threading
 import time
 import uuid
 
-from . import config, summarize, transcript, tts
+from . import config, session, summarize, transcript, tts
 
 
 def _log(msg: str) -> None:
@@ -355,13 +355,40 @@ def notification_main() -> int:
         _log(f"notify skip (no keyword): {message[:60]}")
         return 0
 
+    cwd = payload.get("cwd") or ""
+    if config.notify_is_disabled_for(cwd):
+        _log(f"notify skip (disabled for {os.path.basename(cwd) or cwd}): {message[:60]}")
+        return 0
+
     project = _project_name(payload) if config.ANNOUNCE_PROJECT else ""
     if _notify_recently_spoke(project):
         _log(f"notify dedupe ({project}): {message[:60]}")
         return 0
 
     body = config.NOTIFY_BODY
-    if project:
+
+    # Per-session activity title — written by the UserPromptSubmit hook
+    # each time the user sends a message. Lets us identify *which*
+    # window is asking by what it's doing, not just by directory name
+    # (multiple windows can share a project).
+    session_id = str(payload.get("session_id") or "")
+    summary = ""
+    if session_id:
+        state = session.read(session_id)
+        if state:
+            summary = str(state.get("summary") or "")
+
+    spoken: str
+    if summary:
+        try:
+            spoken = config.NOTIFY_FORMAT_WITH_SUMMARY.format(
+                summary=summary,
+                project=config.project_alias(project) if project else "",
+                text=body,
+            )
+        except (KeyError, IndexError, ValueError):
+            spoken = f"在做 {summary} 的視窗,{body}"
+    elif project:
         announced = config.project_alias(project)
         try:
             spoken = config.NOTIFY_FORMAT.format(project=announced, text=body)

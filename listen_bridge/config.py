@@ -390,6 +390,42 @@ NOTIFY_DEDUPE_SEC = float(os.getenv("NOTIFY_DEDUPE_SEC", "10"))
 # whose mtime is what we check). Lives next to the queue dir so it
 # shares the same cleanup story.
 NOTIFY_STATE_DIR = os.path.join(tempfile.gettempdir(), "listen-claude-notify")
+
+# Per-cwd silence: if a marker file exists under here whose name
+# matches the firing project's directory, skip the notification. Used
+# by users who run a particular project in Claude Code auto-accept
+# mode — every auto-accepted tool still fires a Notification payload
+# we'd otherwise pass through the filter and speak, which is noise
+# when the prompts aren't actually blocking the user.
+NOTIFY_DISABLED_DIR = os.path.join(
+    tempfile.gettempdir(), "listen-claude-notify-disabled"
+)
+
+
+def notify_is_disabled_for(cwd: str) -> bool:
+    """True if the user has silenced notifications for this project
+    directory via `scripts/toggle notify off`."""
+    if not cwd:
+        return False
+    name = os.path.basename(cwd.rstrip("/\\")) or cwd
+    safe = "".join(ch if ch.isalnum() else "_" for ch in name)[:120]
+    return os.path.exists(os.path.join(NOTIFY_DISABLED_DIR, safe + ".flag"))
+
+# Per-session activity title (used by Notification to say "在做 X 那個
+# 視窗" instead of just the project name, so multiple windows in the
+# same project stay distinguishable by ear). Written by the
+# UserPromptSubmit hook, read by notification_main.
+SESSION_STATE_DIR = os.path.join(tempfile.gettempdir(), "listen-claude-sessions")
+SESSION_SUMMARY_MAX_CHARS = int(os.getenv("SESSION_SUMMARY_MAX_CHARS", "30"))
+
+# Format used when a session title is available. {summary} is the
+# captured user prompt headline, {project} is the directory name, and
+# {text} is NOTIFY_BODY. Falls back to NOTIFY_FORMAT (project-only)
+# when no session title has been recorded for the firing session.
+NOTIFY_FORMAT_WITH_SUMMARY = os.getenv(
+    "NOTIFY_FORMAT_WITH_SUMMARY",
+    "在做 {summary} 的視窗,{text}",
+)
 # -------------------------------------------------------------------------
 
 LOG_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.log")

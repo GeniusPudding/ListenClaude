@@ -93,6 +93,48 @@ if ($action -eq 'mode')             { Write-Host "Listen-Claude mode: $(Get-Mode
 if ($validEngines -contains $action) { Set-Engine $action; exit 0 }
 if ($action -eq 'engine')            { Write-Host "Listen-Claude engine: $(Get-Engine)"; exit 0 }
 
+# Notification silencer: /listen notify off [<project-name>]
+# off  → write a flag file so the Notification hook stops speaking for
+#        this cwd's project (use it in windows running in auto-accept
+#        mode where every auto-resolved permission ask was being spoken
+#        despite no actual Y/N prompt).
+# on   → remove the flag.
+# Without an explicit name, defaults to the basename of the current dir.
+if ($action -eq 'notify') {
+    $sub = if ($Param) { $Param.ToLower() } else { 'status' }
+    $disabledDir = Join-Path $env:TEMP 'listen-claude-notify-disabled'
+    $projectName = Split-Path -Leaf (Get-Location)
+    $safe = ($projectName -replace '[^A-Za-z0-9_]', '_')
+    $flag = Join-Path $disabledDir ($safe + '.flag')
+
+    switch ($sub) {
+        'off' {
+            New-Item -ItemType Directory -Path $disabledDir -Force | Out-Null
+            New-Item -ItemType File -Path $flag -Force | Out-Null
+            Write-Host "Listen-Claude notify: OFF for $projectName"
+        }
+        'on' {
+            if (Test-Path $flag) { Remove-Item $flag -Force }
+            Write-Host "Listen-Claude notify: ON for $projectName"
+        }
+        'toggle' {
+            if (Test-Path $flag) {
+                Remove-Item $flag -Force
+                Write-Host "Listen-Claude notify: ON for $projectName"
+            } else {
+                New-Item -ItemType Directory -Path $disabledDir -Force | Out-Null
+                New-Item -ItemType File -Path $flag -Force | Out-Null
+                Write-Host "Listen-Claude notify: OFF for $projectName"
+            }
+        }
+        default {
+            $state = if (Test-Path $flag) { 'OFF' } else { 'ON' }
+            Write-Host "Listen-Claude notify: $state for $projectName"
+        }
+    }
+    exit 0
+}
+
 # Voice profile selector: /listen voice <name>
 if ($action -eq 'voice') {
     if (-not $Param) {
