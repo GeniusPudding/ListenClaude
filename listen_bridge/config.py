@@ -428,4 +428,26 @@ NOTIFY_FORMAT_WITH_SUMMARY = os.getenv(
 )
 # -------------------------------------------------------------------------
 
+# --- Remote-machine support (SSH / IDE-over-SSH agents) -----------------
+# When LISTEN_CLAUDE_URL is set, hook entry scripts POST the original
+# Claude Code stdin to that URL instead of trying to synthesise and
+# play audio on the current machine. Typical setup: the user runs
+# Listen-Claude on their workstation (Mac or Windows) and SSHes into a
+# dev box with `ssh -R 7878:localhost:7878 remote`. On the remote,
+# .env sets LISTEN_CLAUDE_URL=http://127.0.0.1:7878 and hooks forward
+# through the SSH tunnel to the workstation, where playback happens
+# on the user's actual speakers.
+
+LISTEN_CLAUDE_URL = os.getenv("LISTEN_CLAUDE_URL", "")
+
+# Optional bearer token. When set on both client (remote) and server
+# (workstation), the server rejects POSTs that don't match. Useful when
+# the listener binds something less private than 127.0.0.1.
+LISTEN_CLAUDE_TOKEN = os.getenv("LISTEN_CLAUDE_TOKEN", "")
+
+# Default bind for the workstation-side listener (see server.py).
+LISTEN_CLAUDE_SERVER_HOST = os.getenv("LISTEN_CLAUDE_SERVER_HOST", "127.0.0.1")
+LISTEN_CLAUDE_SERVER_PORT = int(os.getenv("LISTEN_CLAUDE_SERVER_PORT", "7878"))
+# -------------------------------------------------------------------------
+
 LOG_PATH = os.path.join(tempfile.gettempdir(), "listen-claude.log")

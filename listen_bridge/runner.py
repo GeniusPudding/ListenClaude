@@ -285,21 +285,13 @@ def _notify_mark_spoke(project: str) -> None:
         pass
 
 
-def main() -> int:
+def process_stop(payload: dict) -> int:
+    """Stop-hook business logic for a parsed Claude Code payload.
+    Extracted from main() so the same path can be driven either by a
+    direct hook subprocess (reading stdin locally) or by the HTTP
+    listener (receiving the payload from a remote machine over an
+    SSH tunnel)."""
     if not config.is_enabled():
-        return 0
-
-    # If we're the `claude -p` subprocess spawned by TTS_MODE=llm, the
-    # Stop hook fires again — bail out so we don't recurse forever.
-    from . import llm
-    if llm.is_inner_summarization_call():
-        return 0
-
-    raw = sys.stdin.read()
-    try:
-        payload = json.loads(raw, strict=False)
-    except Exception as e:
-        _log(f"failed to parse hook stdin: {e}")
         return 0
 
     text = transcript.extract_last_assistant(payload)
@@ -327,26 +319,11 @@ def main() -> int:
     return 0
 
 
-def notification_main() -> int:
-    """Entry point for Claude Code's Notification hook.
-
-    Speaks a short prompt — by default 「視窗 <project>:需要確認」— when
-    Claude Code asks the user a Yes/No permission question. Reuses the
-    same FIFO queue as the Stop hook so messages from multiple windows
-    still play in order without overlap.
-
-    Filters by NOTIFY_KEYWORDS so idle / non-permission notifications
-    don't pester the user, and dedupes within NOTIFY_DEDUPE_SEC per
-    project so rapidly-repeated prompts only speak once.
-    """
+def process_notification(payload: dict) -> int:
+    """Notification-hook business logic, accepts a parsed payload. The
+    public entry points (notification_main + the HTTP listener) wrap
+    this with stdin / HTTP body decoding respectively."""
     if not config.is_enabled():
-        return 0
-
-    raw = sys.stdin.read()
-    try:
-        payload = json.loads(raw, strict=False)
-    except Exception as e:
-        _log(f"notify: failed to parse hook stdin: {e}")
         return 0
 
     message = str(payload.get("message") or "")
@@ -413,6 +390,65 @@ def notification_main() -> int:
     )
     _drain_until_done(qfile)
     return 0
+
+
+def _read_stdin_payload() -> dict | None:
+    """Read the hook payload from stdin in UTF-8 bytes mode. Python on
+    Windows defaults sys.stdin to cp950/cp1252 which mangles Chinese in
+    payloads (e.g. project paths). Failures return None so callers can
+    silently no-op."""
+    try:
+        raw = sys.stdin.buffer.read().decode("utf-8", errors="replace")
+        return json.loads(raw, strict=False)
+    except Exception as e:
+        _log(f"failed to parse hook stdin: {e}")
+        return None
+
+
+def main() -> int:
+    """Stop-hook entry — reads payload from stdin, dispatches."""
+    # If we're the `claude -p` subprocess spawned by TTS_MODE=llm, the
+    # Stop hook fires again — bail out so we don't recurse forever.
+    from . import llm
+    if llm.is_inner_summarization_call():
+        return 0
+    payload = _read_stdin_payload()
+    if payload is None:
+        return 0
+    return process_stop(payload)
+
+
+def notification_main() -> int:
+    """Notification-hook entry — reads payload from stdin, dispatches."""
+    payload = _read_stdin_payload()
+    if payload is None:
+        return 0
+    return process_notification(payload)
+
+
+def process_user_prompt(payload: dict) -> int:
+    """UserPromptSubmit business logic. Captures the first non-blank
+    line of the user's prompt as this session's activity title, used
+    later by process_notification to identify which window is asking."""
+    from . import llm
+    if llm.is_inner_summarization_call():
+        return 0
+    session_id = str(payload.get("session_id") or "")
+    if not session_id:
+        return 0
+    prompt = str(payload.get("prompt") or "")
+    summary = session.summarize_prompt(prompt, config.SESSION_SUMMARY_MAX_CHARS)
+    project = _project_name(payload)
+    session.write(session_id, summary=summary, project=project)
+    return 0
+
+
+def user_prompt_main() -> int:
+    """UserPromptSubmit hook entry."""
+    payload = _read_stdin_payload()
+    if payload is None:
+        return 0
+    return process_user_prompt(payload)
 
 
 if __name__ == "__main__":
