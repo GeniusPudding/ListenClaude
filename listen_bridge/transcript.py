@@ -26,7 +26,16 @@ def _read_jsonl(path: str):
 
 
 def extract_last_assistant(stop_payload: dict) -> str:
-    """Return the text of the most recent assistant message, or "" if none."""
+    """Return the text of the most recent assistant message, or "" if none.
+
+    When the payload was forwarded from a remote machine (SSH tunnel
+    case), the local transcript file isn't accessible here, so the
+    remote pre-resolves the text on its side and stores it under
+    `_listen_claude_text`. We honour that field first; only fall back
+    to reading transcript_path if the payload is local."""
+    pre = stop_payload.get("_listen_claude_text")
+    if pre:
+        return str(pre).strip()
     transcript_path = stop_payload.get("transcript_path") or ""
     last_text = ""
     for entry in _read_jsonl(transcript_path):

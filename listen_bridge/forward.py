@@ -37,6 +37,36 @@ def is_configured() -> bool:
     return bool(config.LISTEN_CLAUDE_URL)
 
 
+def _enrich_for_remote(raw_body: bytes, event: str) -> bytes:
+    """Bake any local-filesystem-dependent context into the payload
+    here, on the remote side, before it travels over the wire.
+
+    The only such field today is `transcript_path` on the Stop event —
+    Claude Code writes the conversation transcript to a JSONL file
+    under the *remote* HOME, but the receiving workstation can't read
+    that path. So we resolve the last assistant message here and pin
+    it onto the payload as `_listen_claude_text`; the workstation
+    consumes the pre-resolved text directly (see
+    transcript.extract_last_assistant)."""
+    if event != "Stop":
+        return raw_body
+    try:
+        import json as _json
+        payload = _json.loads(raw_body.decode("utf-8", errors="replace") or "{}")
+    except Exception:
+        return raw_body
+
+    from . import transcript
+    text = transcript.extract_last_assistant(payload)
+    if not text:
+        return raw_body
+    payload["_listen_claude_text"] = text
+    try:
+        return _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    except Exception:
+        return raw_body
+
+
 def forward(raw_body: bytes, event: str) -> bool:
     """POST the raw hook payload to the configured server. Returns True
     on success (HTTP 2xx); False on any error — caller falls back to
@@ -77,7 +107,8 @@ def forward_or_local(event: str, local_handler) -> int:
         return 0
 
     if is_configured():
-        if forward(raw, event):
+        enriched = _enrich_for_remote(raw, event)
+        if forward(enriched, event):
             return 0
         _log(f"forward fell back to local for {event}")
 
