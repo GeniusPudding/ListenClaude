@@ -354,8 +354,22 @@ NOTIFY_KEYWORDS = tuple(
 )
 
 # Short body spoken when a permission notification fires. Combined with
-# ANNOUNCE_FORMAT to produce e.g. 「視窗 聽小爪:需要確認」.
-NOTIFY_BODY = os.getenv("NOTIFY_BODY", "需要確認")
+# NOTIFY_FORMAT to produce e.g. 「視窗 聽小爪,需要你確認一下喔。」.
+# The body intentionally ends in 「。」 — autoregressive TTS models that
+# never see a final-punctuation token tend to either emit pure breath
+# (no synthesized speech at all) or ramble past the actual text. The
+# default phrasing is also long enough to give the model time to enter
+# its rhythm; very short bodies (~10 chars) collapse to noise.
+NOTIFY_BODY = os.getenv("NOTIFY_BODY", "需要你確認一下喔。")
+
+# Format used when joining the project name and NOTIFY_BODY into the
+# spoken string. Distinct from ANNOUNCE_FORMAT (which the Stop hook
+# uses) because short utterances are stricter about punctuation — a
+# colon between project and body reproducibly broke synthesis on
+# gptsovits with bodies under ~10 chars, while a comma + period
+# survived. Long Stop-hook texts don't show the same fragility, so
+# the two templates can sensibly drift apart.
+NOTIFY_FORMAT = os.getenv("NOTIFY_FORMAT", "視窗 {project},{text}")
 
 # Per-project dedupe window. If the same project triggers another
 # notification within this many seconds of the previous spoken one, we

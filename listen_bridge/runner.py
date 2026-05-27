@@ -351,7 +351,11 @@ def notification_main() -> int:
 
     body = config.NOTIFY_BODY
     if project:
-        spoken = _format_announcement(config.project_alias(project), body)
+        announced = config.project_alias(project)
+        try:
+            spoken = config.NOTIFY_FORMAT.format(project=announced, text=body)
+        except (KeyError, IndexError, ValueError):
+            spoken = f"{announced}, {body}"
     else:
         spoken = body
 
