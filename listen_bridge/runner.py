@@ -22,6 +22,7 @@ queue waiting its turn.
 import json
 import os
 import os.path
+import re
 import sys
 import threading
 import time
@@ -285,6 +286,57 @@ def _notify_mark_spoke(project: str) -> None:
         pass
 
 
+_STOP_PREFIX_RE = re.compile(r"^視窗\s+\S+?\s*[:,，]\s*")
+
+
+def _stop_signature(spoken: str) -> str:
+    """Return the topic signature used for Stop-content dedupe — the
+    leading STOP_DEDUPE_PREFIX_CHARS characters of the *body*, after
+    the 「視窗 <project>:」 / 「視窗 <project>,」 prefix has been stripped.
+    Lets us detect 「same topic, rephrased」 even though ANNOUNCE_FORMAT
+    has wrapped them differently."""
+    body = _STOP_PREFIX_RE.sub("", spoken).strip()
+    return body[:config.STOP_DEDUPE_PREFIX_CHARS]
+
+
+def _stop_recently_spoke_same(project: str, signature: str) -> bool:
+    """True iff this project spoke a Stop with a topic similar enough
+    to `signature` within STOP_DEDUPE_WINDOW_SEC. Uses fuzzy ratio so
+    LLM-paraphrased copies of the same topic ('清單整理好了' vs
+    '清單已經整理好了') still match."""
+    if not project or not signature or config.STOP_DEDUPE_WINDOW_SEC <= 0:
+        return False
+    path = os.path.join(config.STOP_DEDUPE_DIR, _safe_state_filename(project))
+    try:
+        age = time.time() - os.path.getmtime(path)
+    except OSError:
+        return False
+    if age >= config.STOP_DEDUPE_WINDOW_SEC:
+        return False
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            prev = f.read().strip()
+    except OSError:
+        return False
+    if not prev:
+        return False
+    from difflib import SequenceMatcher
+    ratio = SequenceMatcher(None, prev, signature).ratio()
+    return ratio >= config.STOP_DEDUPE_RATIO
+
+
+def _stop_mark_spoke(project: str, signature: str) -> None:
+    if not project:
+        return
+    try:
+        os.makedirs(config.STOP_DEDUPE_DIR, exist_ok=True)
+        path = os.path.join(config.STOP_DEDUPE_DIR, _safe_state_filename(project))
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(signature)
+    except OSError:
+        pass
+
+
 def process_stop(payload: dict) -> int:
     """Stop-hook business logic for a parsed Claude Code payload.
     Extracted from main() so the same path can be driven either by a
@@ -312,6 +364,16 @@ def process_stop(payload: dict) -> int:
     spoken = summarize.prepare_text(text, config.TTS_MODE, config.TTS_MAX_CHARS)
     if project:
         spoken = _format_announcement(config.project_alias(project), spoken)
+
+    # Same-topic dedupe — silences /loop dynamic-mode and plan-mode
+    # agents that keep firing Stop with rephrased copies of the same
+    # summary every ~30 s. The signature compares body prefix so the
+    # 視窗 X: wrapping doesn't defeat the match.
+    signature = _stop_signature(spoken)
+    if signature and _stop_recently_spoke_same(project, signature):
+        _log(f"stop dedupe ({project}, same topic within {config.STOP_DEDUPE_WINDOW_SEC:.0f}s): {signature}")
+        return 0
+    _stop_mark_spoke(project, signature)
 
     qfile = _enqueue(spoken, project)
     _log(f"enqueued {os.path.basename(qfile)}: {spoken[:60]}")

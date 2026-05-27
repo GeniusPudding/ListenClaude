@@ -401,6 +401,24 @@ NOTIFY_DISABLED_DIR = os.path.join(
     tempfile.gettempdir(), "listen-claude-notify-disabled"
 )
 
+# Stop-hook content dedupe: when an agent is running in /loop dynamic
+# mode or plan mode it will fire Stop repeatedly with near-identical
+# summaries (the LLM rephrases each call but the topic doesn't move).
+# Keep a per-project record of the leading characters of the last
+# spoken body; if a new fire is similar enough to the recorded
+# signature and was spoken recently, skip it. Lets a real topic
+# change through immediately while suppressing the same-topic-
+# rephrased loop.
+#
+# Uses difflib.SequenceMatcher ratio rather than exact prefix match,
+# because the LLM rewriter freely inserts/drops filler ("已經", "了",
+# "完成") that would defeat a literal compare even when the topic is
+# obviously identical.
+STOP_DEDUPE_PREFIX_CHARS = int(os.getenv("STOP_DEDUPE_PREFIX_CHARS", "40"))
+STOP_DEDUPE_RATIO = float(os.getenv("STOP_DEDUPE_RATIO", "0.6"))
+STOP_DEDUPE_WINDOW_SEC = float(os.getenv("STOP_DEDUPE_WINDOW_SEC", "300"))
+STOP_DEDUPE_DIR = os.path.join(tempfile.gettempdir(), "listen-claude-stop-dedupe")
+
 
 def notify_is_disabled_for(cwd: str) -> bool:
     """True if the user has silenced notifications for this project
