@@ -164,6 +164,29 @@ case "$action" in
         ;;
 esac
 
+# Hard-stop: drops the disabled marker, purges unplayed queue items,
+# and kills the worker process tree (so the audio subprocess stops
+# mid-sentence). Without this, anything already queued keeps playing
+# for up to a minute after toggle off — not what the user expects.
+stop_listening() {
+    local tmpdir="${TMPDIR:-/tmp}"
+    rm -f "$tmpdir/listen-claude-queue"/*.json 2>/dev/null
+    local lock="$tmpdir/listen-claude.lock"
+    if [[ -f "$lock" ]]; then
+        local worker_pid
+        worker_pid="$(<"$lock")"
+        worker_pid="${worker_pid//[!0-9]/}"
+        if [[ -n "$worker_pid" ]]; then
+            # Kill children first (the audio playback subprocess),
+            # then the worker. pkill -P on macOS / Linux is safe even
+            # if the pid doesn't exist or has no children.
+            pkill -9 -P "$worker_pid" 2>/dev/null || true
+            kill -9 "$worker_pid" 2>/dev/null || true
+        fi
+        rm -f "$lock"
+    fi
+}
+
 # on/off/status/toggle.
 exists=0
 [[ -f "$marker" ]] && exists=1
@@ -175,6 +198,7 @@ case "$action" in
         ;;
     off)
         [[ $exists -eq 0 ]] && : > "$marker"
+        stop_listening
         state="OFF"
         ;;
     status)
@@ -184,7 +208,7 @@ case "$action" in
         if [[ $exists -eq 1 ]]; then
             rm -f "$marker"; state="ON"
         else
-            : > "$marker"; state="OFF"
+            : > "$marker"; stop_listening; state="OFF"
         fi
         ;;
 esac

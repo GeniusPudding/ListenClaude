@@ -167,15 +167,46 @@ if ($action -eq 'voice') {
     exit 0
 }
 
+# Hard-stop: drops the disabled marker, purges any unplayed items in
+# the queue, and kills the worker process tree (which interrupts the
+# in-progress PowerShell/afplay/aplay subprocess so playback stops
+# mid-sentence). Without this, the current item finishes and any
+# already-queued ones would keep going for up to a minute.
+function Stop-Listening {
+    $queueDir = Join-Path $env:TEMP 'listen-claude-queue'
+    if (Test-Path $queueDir) {
+        Remove-Item "$queueDir\*.json" -Force -ErrorAction SilentlyContinue
+    }
+    $lock = Join-Path $env:TEMP 'listen-claude.lock'
+    if (Test-Path $lock) {
+        try {
+            $workerPid = [int]((Get-Content $lock -Raw -ErrorAction SilentlyContinue).Trim())
+            if ($workerPid -gt 0) {
+                # /T = include child processes (the audio playback subprocess).
+                & taskkill.exe /F /T /PID $workerPid 2>$null | Out-Null
+            }
+        } catch {}
+        Remove-Item $lock -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # on/off/status/toggle.
 $exists = Test-Path $marker
 switch ($action) {
     'on'     { if ($exists) { Remove-Item $marker -Force }; $state = 'ON' }
-    'off'    { if (-not $exists) { New-Item -ItemType File -Path $marker -Force | Out-Null }; $state = 'OFF' }
+    'off'    {
+        if (-not $exists) { New-Item -ItemType File -Path $marker -Force | Out-Null }
+        Stop-Listening
+        $state = 'OFF'
+    }
     'status' { $state = if ($exists) { 'OFF' } else { 'ON' } }
     default  {
         if ($exists) { Remove-Item $marker -Force; $state = 'ON' }
-        else         { New-Item -ItemType File -Path $marker -Force | Out-Null; $state = 'OFF' }
+        else         {
+            New-Item -ItemType File -Path $marker -Force | Out-Null
+            Stop-Listening
+            $state = 'OFF'
+        }
     }
 }
 Write-Host "Listen-Claude TTS: $state"
