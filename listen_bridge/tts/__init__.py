@@ -34,10 +34,20 @@ def _resolve_engine(text: str) -> str:
     return config.TTS_AUTO_ZH_ENGINE
 
 
-def speak(text: str) -> None:
+def speak(text: str, engine: str | None = None) -> None:
+    """Synthesize and play `text`.
+
+    `engine` lets a caller override config.TTS_ENGINE for this one
+    utterance — used by the Notification hook to force short prompts
+    through a reliable engine (Edge) regardless of the main voice
+    setting, so the user-facing voice clone stays decoupled from the
+    short-utterance robustness needs of the notification path."""
     if not text:
         return
-    engine = _resolve_engine(text)
+    if engine:
+        engine = engine.lower()
+    else:
+        engine = _resolve_engine(text)
     if engine == "edge":
         from . import edge
         edge.speak(text)

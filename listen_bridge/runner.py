@@ -64,8 +64,13 @@ def _ensure_queue_dir() -> None:
         _log(f"failed to create queue dir {config.QUEUE_DIR}: {e}")
 
 
-def _enqueue(spoken: str, project: str) -> str:
+def _enqueue(spoken: str, project: str, engine: str | None = None) -> str:
     """Write a request file to the queue and return its absolute path.
+
+    `engine` lets the producer pin which TTS engine the worker should
+    use for this specific item — needed so the Notification hook can
+    force Edge (reliable short-text) regardless of the main TTS_ENGINE
+    that's set for Stop-hook readback.
 
     Uses an atomic write-then-rename so the worker never observes a
     half-written JSON file (Windows + POSIX both honor os.replace).
@@ -77,6 +82,8 @@ def _enqueue(spoken: str, project: str) -> str:
     path = os.path.join(config.QUEUE_DIR, name)
     tmp = path + ".tmp"
     payload = {"spoken": spoken, "project": project, "ts": time.time()}
+    if engine:
+        payload["engine"] = engine
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False)
     os.replace(tmp, path)
@@ -95,15 +102,18 @@ def _list_queue() -> list[str]:
     return names
 
 
-def _read_item(path: str) -> tuple[str | None, float]:
-    """Return (spoken_text, enqueue_ts). spoken_text is None on read failure."""
+def _read_item(path: str) -> tuple[str | None, float, str | None]:
+    """Return (spoken_text, enqueue_ts, engine_override). spoken_text is
+    None on read failure; engine_override is None unless the producer
+    pinned a specific engine for this item."""
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
     except (OSError, json.JSONDecodeError) as e:
         _log(f"failed to read queue item {path}: {e}")
-        return None, 0.0
-    return data.get("spoken"), float(data.get("ts") or 0.0)
+        return None, 0.0, None
+    engine = data.get("engine")
+    return data.get("spoken"), float(data.get("ts") or 0.0), engine
 
 
 def _try_claim_lock() -> bool:
@@ -176,7 +186,7 @@ def _run_worker() -> None:
                 idle_since = None
                 name = files[0]
                 path = os.path.join(config.QUEUE_DIR, name)
-                spoken, ts = _read_item(path)
+                spoken, ts, engine_override = _read_item(path)
                 # Delete first so a TTS crash doesn't cause re-speaking
                 # via stale-lock recovery.
                 try:
@@ -188,9 +198,10 @@ def _run_worker() -> None:
                 if ts and time.time() - ts > config.QUEUE_MAX_AGE_SEC:
                     _log(f"drop stale queue item (age {time.time() - ts:.0f}s): {spoken[:40]}")
                     continue
-                _log(f"speak ({config.TTS_ENGINE} / {config.TTS_VOICE or 'default'}): {spoken[:80]}")
+                effective_engine = engine_override or config.TTS_ENGINE
+                _log(f"speak ({effective_engine} / {config.TTS_VOICE or 'default'}): {spoken[:80]}")
                 try:
-                    tts.speak(spoken)
+                    tts.speak(spoken, engine=engine_override)
                 except Exception as e:
                     _log(f"tts.speak failed: {e}")
                 continue
@@ -359,9 +370,20 @@ def notification_main() -> int:
     else:
         spoken = body
 
+    # Pin the engine to NOTIFY_ENGINE (default: edge) so the short prompt
+    # plays through a reliable text-to-speech path regardless of which
+    # voice clone the user is using for Stop-hook readback. "auto" =
+    # treat the same as the main TTS_ENGINE setting (don't override).
+    notify_engine: str | None = config.NOTIFY_ENGINE
+    if notify_engine in ("", "auto"):
+        notify_engine = None
+
     _notify_mark_spoke(project)
-    qfile = _enqueue(spoken, project)
-    _log(f"notify enqueued {os.path.basename(qfile)}: {spoken[:60]}")
+    qfile = _enqueue(spoken, project, engine=notify_engine)
+    _log(
+        f"notify enqueued {os.path.basename(qfile)} "
+        f"[engine={notify_engine or config.TTS_ENGINE}]: {spoken[:60]}"
+    )
     _drain_until_done(qfile)
     return 0
 

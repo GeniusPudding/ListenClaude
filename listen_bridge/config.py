@@ -364,12 +364,21 @@ NOTIFY_BODY = os.getenv("NOTIFY_BODY", "需要你確認一下喔。")
 
 # Format used when joining the project name and NOTIFY_BODY into the
 # spoken string. Distinct from ANNOUNCE_FORMAT (which the Stop hook
-# uses) because short utterances are stricter about punctuation — a
-# colon between project and body reproducibly broke synthesis on
-# gptsovits with bodies under ~10 chars, while a comma + period
-# survived. Long Stop-hook texts don't show the same fragility, so
-# the two templates can sensibly drift apart.
-NOTIFY_FORMAT = os.getenv("NOTIFY_FORMAT", "視窗 {project},{text}")
+# uses) because notifications are short enough that the project name
+# can get swallowed in the autoregressive warmup — repeating the name
+# at both ends gives a second chance to catch it.
+NOTIFY_FORMAT = os.getenv(
+    "NOTIFY_FORMAT", "{project},視窗 {project},{text}"
+)
+
+# Engine to use for spoken notifications. Defaults to "edge" rather
+# than TTS_ENGINE so that the voice-clone setup (which is tuned for
+# the long-text Stop-hook readback) doesn't degrade the short, urgent
+# Yes/No prompts. Edge handles short Chinese + English mixed text
+# cleanly out of the box and never produces the "all breath / no
+# speech" collapse we saw with the cloned voice on 4-character bodies.
+# Set to "auto" to honor the main TTS_ENGINE for notifications too.
+NOTIFY_ENGINE = os.getenv("NOTIFY_ENGINE", "edge").lower()
 
 # Per-project dedupe window. If the same project triggers another
 # notification within this many seconds of the previous spoken one, we
